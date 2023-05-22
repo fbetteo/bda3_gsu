@@ -1,0 +1,425 @@
+---
+title: "Assignment 6"
+author: anonymous # <-- hand in anonymously
+format: 
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true  
+    number-sections: true
+    mainfont: Georgia, serif
+    linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:  
+    documentclass: article
+    number-sections: true
+    code-annotations: none
+reference-location: margin
+citation-location: margin 
+comments:
+  hypothesis: true
+editor: source
+---
+
+# General information
+
+
+::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse="false"}
+## Setup
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.* **Make sure that this does not get displayed in the PDF!**
+
+The following installs and loads the `aaltobda` package:
+
+```{r}
+if(!require(aaltobda)){
+    install.packages("remotes")
+    remotes::install_github("avehtari/BDA_course_Aalto", subdir = "rpackage", upgrade="never")
+    library(aaltobda)
+}
+```
+
+The following installs and loads the [`latex2exp` package](https://github.com/stefano-meschiari/latex2exp), which allows us to use LaTeX in plots:
+
+```{r}
+if(!require(latex2exp)){
+    install.packages("latex2exp")
+    library(latex2exp)
+}
+```
+
+The following installs and loads the [`posterior` package](https://github.com/stan-dev/posterior) which imports the `rhat_basic()` function:
+
+```{r}
+if(!require(posterior)){
+    install.packages("posterior")
+    library(posterior)
+}
+```
+
+The following installs and loads the [`ggplot2` package](https://ggplot2.tidyverse.org/), the [`bayesplot` package](https://mc-stan.org/bayesplot/index.html) and the [`dplyr` package](https://dplyr.tidyverse.org/)
+
+```{r}
+if(!require(ggplot2)){
+    install.packages("ggplot2")
+    library(ggplot2)
+}
+if(!require(bayesplot)){
+    install.packages("bayesplot")
+    library(bayesplot)
+}
+if(!require(dplyr)){
+    install.packages("dplyr")
+    library(dplyr)
+}
+if(!require(tidyr)){
+    install.packages("tidyr")
+    library(tidyr)
+}
+# Some additional set-up to make plots legible
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+# register_knitr_engine()
+```
+
+The following installs and loads the [`cmdstanr` package](https://mc-stan.org/cmdstanr/) and tries to install `cmdstan`.
+
+```{r}
+if(!require(cmdstanr)){
+    install.packages("cmdstanr", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+    library(cmdstanr)
+}
+cmdstan_installed <- function(){
+  res <- try(out <- cmdstanr::cmdstan_path(), silent = TRUE)
+  !inherits(res, "try-error")
+}
+if(!cmdstan_installed()){
+    install_cmdstan()
+}
+```
+:::
+:::
+
+# Stan warm-up: linear model of BDA retention with Stan (2 points)
+
+## (b)
+
+Full corrected stan code.
+
+Fixes:  
+* sigma has now a lower bound at 0 .  
+* added semicolon to the transformed parameter statement that was missing  
+* y_pred samples random normal observations with mean "mu_pred" instead of "mu".
+
+
+```
+data {
+    // number of data points
+    int<lower=0> N; 
+    // covariate / predictor
+    vector[N] x; 
+    // observations
+    vector[N] y; 
+    // number of covariate values to make predictions at
+    int<lower=0> no_predictions;
+    // covariate values to make predictions at
+    vector[no_predictions] x_predictions; 
+}
+parameters {
+    // intercept
+    real alpha; 
+    // slope
+    real beta; 
+    // the standard deviation should be constrained to be positive
+    real<lower=0> sigma; 
+}
+transformed parameters {
+    // deterministic transformation of parameters and data
+    vector[N] mu = alpha + beta * x ;// linear model
+}
+model {
+    // observation model / likelihood
+    y ~ normal(mu, sigma); 
+}
+generated quantities {
+    // compute the means for the covariate values at which to make predictions
+    vector[no_predictions] mu_pred = alpha + beta * x_predictions;
+    // sample from the predictive distribution, a normal(mu_pred, sigma).
+    array[no_predictions] real y_pred = normal_rng(to_array_1d(mu_pred), sigma);
+}
+```
+
+::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse="false"}
+## Model fitting
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.* **Make sure that this does not get displayed in the PDF!**
+
+**Data assembly happens here**:
+
+```{r}
+#| warning: false
+# These are our observations y: the proportion of students handing in each assignment (1-8),
+# sorted by year (row-wise) and assignment (column-wise).
+# While the code suggest a matrix structure, 
+# the result will actually be a vector of length N = no_years * no_assignments
+propstudents<-c(c(176, 174, 158, 135, 138, 129, 126, 123)/176,
+                c(242, 212, 184, 177, 174, 172, 163, 156)/242,
+                c(332, 310, 278, 258, 243, 242, 226, 224)/332,
+                c(301, 269, 231, 232, 217, 208, 193, 191)/301,
+                c(245, 240, 228, 217, 206, 199, 191, 182)/245)
+# These are our predictors x: for each observation, the corresponding assignment number.
+assignment <- rep(1:8, 5)
+# These are in some sense our test data: the proportion of students handing in the last assignment (9),
+# sorted by year. 
+# Usually, we would not want to split our data like that and instead
+# use e.g. Leave-One-Out Cross-Validation (LOO-CV, see e.g. http://mc-stan.org/loo/index.html)
+# to evaluate model performance.
+propstudents9 = c(121/176, 153/242, 218/332, 190/301, 175/245)
+# The total number of assignments
+no_assignments = 9
+# The assignment numbers for which we want to generate predictions
+x_predictions = 1:no_assignments
+# (Cmd)Stan(R) expects the data to be passed in the below format:
+model_data = list(N=length(assignment),
+                 x=assignment,
+                 y=propstudents,
+                 no_predictions=no_assignments,
+                 x_predictions=x_predictions)
+```
+
+**Model fitting happens here**:
+
+```{r}
+#| warning: false 
+# This reads the file at the specified path and tries to compile it. 
+# If it fails, an error is thrown.
+retention_model = cmdstan_model("./assignment6_linear_model.stan")
+# This "out <- capture.output(...)" construction suppresses output from cmdstanr
+# See also https://github.com/stan-dev/cmdstanr/issues/646
+out <- capture.output(
+    # Sampling from the model happens here:
+    fit <- retention_model$sample(data=model_data, refresh=0, show_messages=FALSE)
+)
+```
+
+**Draws postprocessing happens here**:
+
+```{r}
+library(magrittr)
+```
+
+```{r}
+# This extracts the draws from the sampling result as a data.frame.
+draws_df = fit$draws(format="draws_df")
+
+# This does some data/draws wrangling to compute the 5, 50 and 95 percentiles of 
+# the mean at the specified covariate values (x_predictions). 
+# It can be instructive to play around with each of the data processing steps
+# to find out what each step does, e.g. by removing parts from the back like "|>  gather(pct,y,-x)"
+# and printing the resulting data.frame.
+mu_quantiles_df = draws_df %>% 
+      subset_draws(variable = c("mu_pred")) %>% 
+      summarise_draws(~quantile2(.x, probs = c(0.05, .5, 0.95))) %>% 
+      mutate(x = 1:9) %>% 
+      pivot_longer(c(q5, q50, q95), names_to = c("pct"))
+# Same as above, but for the predictions.
+y_quantiles_df = draws_df %>%
+      subset_draws(variable = c("y_pred")) %>% 
+      summarise_draws(~quantile2(.x, probs = c(0.05, .5, 0.95))) %>% 
+      mutate(x = 1:9) %>% 
+      pivot_longer(c(q5, q50, q95), names_to = c("pct"))
+```
+:::
+:::
+
+::: both
+**Plotting happens here**:
+
+```{r}
+#| label: fig-posterior
+#| fig-cap: Mean value  + 0.05 and 0.95 percentiles for mu (grey) and for the predictions (red). Data is plotted as dots. 
+ggplot() +
+  # scatter plot of the training data:  
+  geom_point(
+    aes(x, y, color=assignment), 
+    data=data.frame(x=assignment, y=propstudents, assignment="1-8")
+) +
+  # scatter plot of the test data:
+  geom_point(
+    aes(x, y, color=assignment), 
+    data=data.frame(x=no_assignments, y=propstudents9, assignment="9")
+) +
+  # you have to tell us what this plots:
+  geom_line(aes(x,y=value,linetype=pct), data=mu_quantiles_df, color='grey', linewidth=1.5) +
+  # you have to tell us what this plots:
+  geom_line(aes(x,y=value,linetype=pct), data=y_quantiles_df, color='red') +
+  # adding xticks for each assignment:
+  scale_x_continuous(breaks=1:no_assignments) +
+  # adding labels to the plot:
+  labs(y="assignment submission %", x="assignment number") +
+  # specifying that line types repeat:
+  scale_linetype_manual(values=c(2,1,2)) +
+  # Specify colours of the observations:
+  scale_colour_manual(values = c("1-8"="black", "9"="blue")) +
+  # remove the legend for the linetypes:
+  guides(linetype="none")
+```
+:::
+
+::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse="false"}
+## Quick check for model convergence
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.* **Make sure that this does not get displayed in the PDF!**
+
+If your model is correctly implemented, sampling should have been succesful. You can check whether Stan thinks that sampling succeeded by inspecting the output of the below command, which you should be able to interpret with a little help from the [CmdStan User's Guide](https://mc-stan.org/docs/cmdstan-guide/diagnose.html).
+
+```{r}
+fit$cmdstan_diagnose()
+```
+:::
+:::
+
+## (c)
+
+-   The solid red line is the median of the distribution of the predictions of Y.\
+    The dashed lines are the 0.05 and 0.95 percentiles respectively.\
+    The grey lines are the same but for the distribution of Mu, the mean of Y given X.
+
+```{r}
+summary(draws_df$beta)
+
+```
+
+-   The model estimates that with each assignment, close to 4.4 percentage points of students stop submitting assignments.
+
+-   Based on the plot, the model does a "not that bad" job, 3 out of 4 values for assignment 9 are withing 90% interval although all of them are above the mean prediction. Could be better.
+
+-   Maybe we could use a binomial likelihood for proportions instead of a normal distribution? Also, include some polynomial component to the predictor to not assume a linear relationship?
+
+# Generalized linear model: Bioassay with Stan (4 points)
+
+## (d)
+
+```{r}
+data("bioassay")
+
+bioassay_data = list(M=length(bioassay$y),
+                 N=bioassay$n,
+                 x=bioassay$x,
+                 y=bioassay$y
+                 )
+```
+
+Stan model:  
+
+```
+data {
+  int<lower=0> M;
+  vector[M] x; // Dose predictor
+  int N[M]; // N subjects
+  int y[M]; // Deaths.
+  
+  
+}
+
+parameters {
+    // intercept
+    real alpha; 
+    // slope
+    real beta; 
+}
+
+
+transformed parameters {
+    // deterministic transformation of parameters and data
+    vector[M] logit_p = (alpha + beta * x) ;// linear model
+}
+
+model {
+  vector[2] ab; // alpha and beta
+  vector[2] mu; // prior mean
+  matrix[2,2] Sigma = [[4,12], 
+                      [12,100]]; // prior covariance matrix
+  
+  ab = [alpha, beta]';
+  mu = [0,10]';
+  
+  ab ~ multi_normal(mu, Sigma); // prior on alpha and beta
+  
+  y ~ binomial_logit(N, logit_p); // likelihood
+}
+```
+
+```{r}
+#| warning: false 
+# This reads the file at the specified path and tries to compile it. 
+# If it fails, an error is thrown.
+bioassay_model = cmdstan_model("./assignment6_bioassay.stan")
+# This "out <- capture.output(...)" construction suppresses output from cmdstanr
+# See also https://github.com/stan-dev/cmdstanr/issues/646
+out <- capture.output(
+    # Sampling from the model happens here:
+    fit <- bioassay_model$sample(data=bioassay_data, refresh=0, show_messages=FALSE)
+)
+```
+
+```{r}
+# We store the draws
+bioassay_draws_df = fit$draws(format="draws_df")
+
+```
+
+```{r}
+fit$summary()
+```
+
+## (e)
+
+```{r}
+# Useful functions: rhat_basic (from posterior)
+warmup = 500
+alpha_r = bioassay_draws_df %>%
+  group_by(.chain) %>%
+  filter(.iteration > warmup) %>%
+  ungroup() %>%
+  select(alpha)
+beta_r = bioassay_draws_df %>%
+  group_by(.chain) %>%
+  filter(.iteration > warmup) %>%
+  ungroup() %>%
+  select(beta)
+
+alpha_rhat = rhat_basic(alpha_r)
+beta_rhat = rhat_basic(beta_r)
+```
+
+I used rhat_basic() which uses the more recent version of Rhat. $\hat R$ for $\alpha$ is `r round(alpha_rhat,2)` and\
+$\hat R$ for $\beta$ is `r round(beta_rhat,2)`.
+
+The idea of $\hat R$ is to roughly estimate by how much the variance/scale of the value estimated would be reduced if we kept simulating more values going towards $n -> \inf$ Values really close to 1 suggest that the scale reduction would be minimal. 
+
+## (f)
+
+
+```{r}
+chains_wo_warmup = bioassay_draws_df %>% group_by(.chain) %>%
+  filter(.iteration > warmup)
+p = mcmc_scatter(chains_wo_warmup, pars=c("alpha", "beta"))
+p + labs(title = "Samples from the posterior of alpha and beta using HMC")
+```
+
+## (g)
+
+-   Windows 10 Pro.
+-   
+    R.  
+-   CmdStanR
+-   No problems installing. CmdStanR automatically provided the command to fix the only error faced.
+-   I don't know yet the intuition / rule to decide when it's needed to use vector\[N\] VarName versus int VarName\[N\]. Encountered a few issues with data type. Vector is for float? Maybe it's really simple but it wasn't obvious to me when doing the assignment.

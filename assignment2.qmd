@@ -1,0 +1,234 @@
+---
+title: "Assignment 2"
+author: anonymous # <-- hand in anonymously
+format: 
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true  
+    number-sections: true
+    mainfont: Georgia, serif
+    fontsize: 1.2em
+  pdf:  
+    documentclass: article
+    number-sections: true
+    include-in-header: 
+      text: |
+        % You can add TeX macros here for PDF, 
+        % see https://quarto.org/docs/output-formats/pdf-basics.html#latex-includes
+        \newcommand{\BetaDist}{\mathrm{Beta}}
+reference-location: margin
+citation-location: margin 
+comments:
+  hypothesis: true
+editor: source
+---
+
+::: hidden
+$$
+% You can add TeX macros here for HTML, see https://quarto.org/docs/authoring/markdown-basics.html#equations
+\renewcommand{\BetaDist}{\mathrm{Beta}}
+$$
+:::
+
+# General information
+
+::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse="false"}
+## Setup
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF for the submission.* **Make sure that this does not get displayed in the PDF!**
+
+This is the template for [assignment 2](assignment2.html). You can download the [qmd-file](https://raw.githubusercontent.com/avehtari/BDA_course_Aalto/gh-pages/assignments/template2.qmd) or copy the code from this rendered document after clicking on `</> Code` in the top right corner.
+
+**Please replace the instructions in this template by your own text, explaining what you are doing in each exercise.**
+
+The following will set-up `markmyassignment` to check your functions at the end of the notebook:
+
+```{r}
+library(markmyassignment) 
+assignment_path = paste("https://github.com/avehtari/BDA_course_Aalto/",
+"blob/master/assignments/tests/assignment2.yml", sep="")
+set_assignment(assignment_path)    
+```
+
+The following installs the `aaltobda` package:
+
+```{r}
+options(repos = list(CRAN="http://cran.rstudio.com/"))
+#| cache: true
+# Caching should be fine here
+install.packages("remotes")
+remotes::install_github("avehtari/BDA_course_Aalto", subdir = "rpackage", upgrade="never")
+```
+:::
+:::
+
+# Inference for binomial proportion
+
+**Loading the library and the data.**
+
+```{r}
+
+library(aaltobda)
+data("algae")
+# The data are now stored in the variable `algae`.
+# These are the values for the prior required in the assignment
+prior_alpha = 2
+prior_beta = 10
+```
+
+The below data is **only for the tests**, you need to change to the full data `algae` when reporting your results.
+
+```{r}
+algae_test <- c(0, 1, 1, 0, 0, 0)
+```
+
+## (a)
+
+$$\text{likelihood:} p(y|\pi) \propto \pi^{a} * (1-\pi)^{b}$$
+$$\text{prior:} p(\pi) \propto \pi^{\alpha -1}*(1-\pi)^{\beta - 1}$$
+$$\text{posterior:} p(\pi|y) \propto Beta(\alpha + y, \beta + n - y)$$
+
+```{r}
+# These are not the actual values for the posterior! 
+# You will have to compute those from the data!
+
+
+y = sum(algae)
+n = length(algae)
+
+posterior_alpha = prior_alpha + y
+posterior_beta = prior_beta + n - y
+
+print(posterior_alpha)
+print(posterior_beta)
+```
+
+The posterior will have the following form $\BetaDist(46 , 240)$ 
+
+
+
+
+## (b)
+
+**Keep the below name and format for the functions to work with `markmyassignment`:**
+
+```{r}
+# Useful function: qbeta()
+
+beta_point_est <- function(prior_alpha, prior_beta, data) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above,
+    # combined with the prior provided above.
+    y = sum(data)
+    n = length(data)
+    mean = (prior_alpha + y) / (prior_alpha + prior_beta + n)
+}
+beta_interval <- function(prior_alpha, prior_beta, data, prob = 0.95) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above,
+    # combined with the prior provided above.
+    y = sum(data)
+    n = length(data)
+    
+    left_tail = (1-prob)/2
+    right_tail =  1 - left_tail
+    
+    c(qbeta(left_tail, prior_alpha + y, prior_beta + n - y),
+      qbeta(right_tail, prior_alpha + y, prior_beta + n - y))
+}
+
+
+```
+
+The estimated point estimate for $\pi$ given the data and the beta prior used is `r beta_point_est(prior_alpha, prior_beta, algae)` .
+
+The 90% interval for $\pi$ given the data and the beta prior used is `r beta_interval(prior_alpha, prior_beta, algae, 0.9)`
+
+## (c)
+
+**Keep the below name and format for the function to work with `markmyassignment`:**
+
+```{r}
+# Useful function: pbeta()
+
+beta_low <- function(prior_alpha, prior_beta, data, pi_0=0.2) {
+    y = sum(data)
+    n = length(data)
+    
+    pbeta(pi_0, prior_alpha + y, prior_beta + n - y)
+}
+
+
+```
+
+The probability that $\pi$ is lower than 0.2 is `r beta_low(prior_alpha, prior_beta,algae, 0.2)`
+
+
+
+## (d)
+
+For this type of data where we have binary output (occurrence or not of some phenomenon) we need to assume that each observation is conditionally independent given the parameter $\pi$, where that probability is equal for each algae measurement.
+
+## (e)
+
+**Plot the PDFs here. Explain shortly what you do.**
+
+
+```{r, message=FALSE}
+# Useful function: dbeta()
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+y =  sum(algae)
+n = length(algae)
+
+posterior_alpha_a = 1 + y
+posterior_beta_a = 1 + n - y
+
+posterior_alpha_b = 2 + y
+posterior_beta_b = 10 + n - y
+
+posterior_alpha_c = 9 + y
+posterior_beta_c = 10 + n - y
+
+posterior_alpha_d = 50 + y
+posterior_beta_d = 100 + n - y
+
+data = data.frame(x = seq(0,1,0.01))
+data = data %>% mutate(uniform = dbeta(x, posterior_alpha_a, posterior_beta_a),
+                       beta_2_10 = dbeta(x, posterior_alpha_b, posterior_beta_b),
+                       beta_9_10 = dbeta(x, posterior_alpha_c, posterior_beta_c),
+                       beta_50_100 = dbeta(x, posterior_alpha_d, posterior_beta_d))
+
+data = data %>% pivot_longer(!x, names_to = "posterior", values_to = "density")
+
+
+ggplot(data=data) +
+  geom_line(aes(x=x, y=density, colour=posterior))
+```
+
+We have tried 4 different priors. The uniform and the beta(2,10) give really almost equal results and even beta(9,10) is really close because data is overwhelming compared to the weight of the prior.  
+The only one a bit different is the prior beta(50,100) that is centered towards 50% of proportion but with much higher weight (larger scale for alpha and beta). With this prior the posterior is centered more to the right, closer to the prior but still data has more importance.
+
+
+::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse="false"}
+## markmyassignment
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF for the submission.* **Make sure that this does not get displayed in the PDF!**
+
+The following will check the functions for which `markmyassignment` has been set up:
+
+```{r}
+mark_my_assignment()    
+```
+:::
+:::
+
+------------------------------------------------------------------------

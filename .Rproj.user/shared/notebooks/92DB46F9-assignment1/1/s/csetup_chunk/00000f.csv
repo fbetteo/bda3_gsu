@@ -1,0 +1,4 @@
+"0","# This chunk sets echo = TRUE as default, that is print all code."
+"0","# knitr::opts_chunk$set can be used to set other notebook generation options, too."
+"0","# include=FALSE inside curly brackets makes this block not be included in the pdf."
+"0","knitr::opts_chunk$set(echo = TRUE)"

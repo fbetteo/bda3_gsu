@@ -1,0 +1,77 @@
+---
+title: "BDA - Assignment 1"
+author: "Anonymous" # The report should be submited anonymously.
+output: 
+  pdf_document: 
+    toc: yes
+    toc_depth: 1
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+# This chunk sets echo = TRUE as default, that is print all code.
+# knitr::opts_chunk$set can be used to set other notebook generation options, too.
+# include=FALSE inside curly brackets makes this block not be included in the pdf.
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loaded packages
+
+```{r}
+library(aaltobda)
+library(ggplot2)
+```
+
+# Exercise 1)
+
+probability: how likely is that a particular event will occur, bounded between 0 and 1.
+
+probability mass: probability assigned to some discrete values of a distribution. How likely a set (1 or more) of possible values of a discrete variable distribution are.
+
+probability density: probability assigned to continuous values of a distribution. How likely a range of possible values of a discrete variable distribution are.
+
+probability mass function: function that assigns to each value x of the discrete distribution the corresponding probability.
+
+probability density function: function that assigns to each value x of the continuous distribution the corresponding probability.
+
+probability distribution: General concept including discrete and continuous variables. A function that returns the probability of occurrence for any value of the distribution.
+
+discrete probability distribution: Probability distribution for a variable that can only take discrete values. 
+
+continuous probability distribution: Probability distribution for a variable that take continuous values. 
+
+cumulative distribution function (cdf): Function that returns for any value  the probability that an occurrence of the corresponding   random variable will have  a value equal or less to it.
+
+likelihood: probability to see some value(s) of a random variable given some parameter that specifies it's distribution.
+
+# Exercise 2)
+
+## a)
+```{r}
+mu=0.2
+sigma2= 0.01
+
+shape1 = mu*(mu*(1-mu)/sigma2 - 1)
+shape2 = shape1*(1-mu)/mu
+
+
+x = seq(0,1, 0.01)
+y = dbeta(x, shape1=shape1, shape2=shape2)
+plot(x,y)
+```
+## b)
+```{r}
+x_r = rbeta(1000, shape1, shape2)
+hist(x_r)
+
+```
+## c)
+```{r}
+print(mean(x_r))
+print(var(x_r))
+```
+
+## d)
+```{r}
+quantile(x_r, probs=c(0.025, 0.975))
+```

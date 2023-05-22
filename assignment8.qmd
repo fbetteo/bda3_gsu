@@ -1,0 +1,448 @@
+---
+title: "Assignment 8"
+subtitle: "LOO-CV model comparison"
+author: anonymous # <-- hand in anonymously
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true
+    number-sections: true
+    mainfont: Georgia, serif
+    # linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:
+    # documentclass: article
+    geometry:
+    - left=1cm,top=1cm,bottom=1cm,right=7cm
+    number-sections: true
+    code-annotations: none
+# reference-location: margin
+# citation-location: margin
+comments:
+  hypothesis: true
+editor: source
+---
+
+
+# General information
+
+This is the template for [assignment 8](assignment8.html). You can download the [qmd-file](https://raw.githubusercontent.com/avehtari/BDA_course_Aalto/gh-pages/assignments/template8.qmd) or copy the code from this rendered document after clicking on `</> Code` in the top right corner.
+
+**Please replace the instructions in this template by your own text, explaining what you are doing in each exercise.** 
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## Setup
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+The following loads several needed packages:
+
+```{r}
+#| label: imports
+library(bayesplot)
+library(cmdstanr)
+library(dplyr)
+library(ggplot2)
+library(ggdist) # for stat_dotsinterval
+library(posterior)
+library(brms)
+# Globally specfiy cmdstan backend for brms
+options(brms.backend="cmdstanr")
+# Tell brms to cache results if possible
+options(brms.file_refit="on_change")
+
+# Set more readable themes with bigger font for plotting packages
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+```
+
+:::
+::::
+
+
+# A hierarchical model for chicken weight time series
+
+
+## Exploratory data analysis
+### (a)
+
+```{r}
+head(ChickWeight,10)
+```
+
+```{r}
+ggplot(data=ChickWeight) + 
+  geom_histogram(aes(x=weight)) +
+  scale_x_continuous(breaks=c(0,50,100,150,200,250,300,350))
+```
+The weights go from 0 to 375 grams approximately. We can see that the mode is around
+50 grams. Then it decreases pretty much monotonically up to 375 grams. Below 50
+we have a small amount too.
+
+### (b)
+
+
+```{r}
+ggplot(data= ChickWeight) + 
+  geom_line(aes(x=Time, y=weight, group=Chick, color=Diet))
+```
+The chickens seem to have similar weight until day 5 approximately, then we start to 
+see some divergences. At day 20 chicken weight is between 75 and 375 depending on
+the chicken and diet.  
+Apparently Diet 1 is associated with lower weights and Diets 3 and 4 have consistently
+high values.  
+Also we can see some chicken don't make it to day 20.
+
+
+## Linear regression
+### (c)
+
+
+In `brms`, a regression can be specified as below, see also [below (#m)](#m) or [the last template](template7.html#b-1). Fill in the appropriate variables,
+data, and likelihood family. Specify the priors, then run the model (by removing `#| eval: false` below).
+
+```{r, eval=TRUE}
+
+priors <- c(
+  brms::prior(normal(0, 50), coef = "Time"),
+  brms::prior(normal(0, 100 ), coef = "Diet2"),
+  brms::prior(normal(0, 100), coef = "Diet3"),
+  brms::prior(normal(0, 100), coef = "Diet4")
+)
+
+f1 <- brms::brm(
+  # This specifies the formula
+  weight ~ 1 + Time + Diet,
+  # This specifies the dataset
+  data = ChickWeight,
+  # This specifies the likelihood / the observation family
+  family = gaussian(),
+  # This passes the priors specified above to brms
+  prior = priors,
+  # This causes brms to cache the results
+  file = "f1"
+)
+```
+
+
+### (d)
+
+
+```{r}
+brms::pp_check(f1)
+```
+
+We can see that the predicted data is not similar to the real data.   
+1) Real data has only positive values, peaks around 50 and then decreases up to 375 grams.
+Predicted data can take negative values, does not have a clear peak but a plain from 75 to 200 grams
+and decreases faster and with a smaller tail
+2) On top of said above, the predicted data doesn't have any region with as much values 
+as the real data has around 50 grams. The model clearly misses  something about the data
+generation process.
+
+
+### (e)
+
+
+```{r}
+brms::pp_check(f1, type='intervals_grouped', group='Diet')
+```
+We can see that each diet presents similar ranges for all chickens when we know that's not true.
+For ex. Diet 1 has many chickens where the predicted values go way above the real data. Diet 3 has many where real data goes above the predicted values.  
+Maybe we can calculate a different slope for Time for each Diet if we keep the pooled format.
+
+
+
+## Log-normal linear regression
+### (f)
+
+
+```{r}
+log_priors <- c(
+  brms::prior(normal(0, log(3)), coef = "Time"),
+  brms::prior(normal(0, log(5)), coef = "Diet2"),
+  brms::prior(normal(0, log(5)), coef = "Diet3"),
+  brms::prior(normal(0, log(5)), coef = "Diet4")
+)
+```
+
+```{r}
+
+
+f2 <- brms::brm(
+  # This specifies the formula
+  weight ~ 1 + Time + Diet,
+  # This specifies the dataset
+  data = ChickWeight,
+  # This specifies the likelihood / the observation family
+  family = lognormal(),
+  # This passes the priors specified above to brms
+  prior = log_priors,
+  # This causes brms to cache the results
+  file = "f2"
+)
+```
+
+```{r}
+brms::pp_check(f2)
+```
+
+
+```{r}
+brms::pp_check(f2, type='intervals_grouped', group='Diet')
+```
+
+
+At the aggregated level we can see a much better fit in terms of predicted  vs real obseravations, 
+being the predicted ones following much more closer the real distribution and peaking at 
+50 grams.  
+However if we look at the chicken level by diet we can still see severe differences
+between real and predicted values over time.
+
+## Hierarchical log-normal linear regression
+### (g)
+```{r}
+log_priors_hierarchical <- c(
+  # prior(normal(0, log(3)), coef = "Time", group="Chick", class="sd"),
+  brms::prior(normal(0, log(5)), coef = "Diet2"),
+  brms::prior(normal(0, log(5)), coef = "Diet3"),
+  brms::prior(normal(0, log(5)), coef = "Diet4")
+)
+```
+
+```{r}
+
+
+f3 <- brms::brm(
+  # This specifies the formula
+  weight ~ 1 + (Time|Chick) + Diet,
+  # This specifies the dataset
+  data = ChickWeight,
+  # This specifies the likelihood / the observation family
+  family = lognormal(),
+  # This passes the priors specified above to brms
+  prior = log_priors_hierarchical,
+  # This causes brms to cache the results
+  file = "f3"
+)
+```
+
+```{r}
+brms::pp_check(f3)
+```
+```{r}
+brms::pp_check(f3, type='intervals_grouped', group='Diet')
+```
+
+The first chart seems less accurate, the real line does not go through the predicted ones, we can see clear differences. However, at the chicken level in the second plot we can see a much better fit
+not having any real observation outside the range of the predictions for each chicken.  
+I'm honestly a bit confused about the first plot, I thought it would be still accurate as the previous one, 
+specially if at the chicken level we have better results.  
+
+
+### (h)
+
+In this run, 5% of the transitions ended up in divergence.
+
+## Model comparison using the ELPD
+### (i)
+
+```{r}
+loo(f1)
+```
+
+
+```{r}
+loo(f2)
+```
+
+```{r}
+loo(f3)
+```
+
+```{r}
+f1 = add_criterion(f1, "loo")
+f2 = add_criterion(f2, "loo")
+f3 = add_criterion(f3, "loo")
+```
+
+#### Loo comparison
+```{r}
+loo_compare(f1, f2, f3, criterion="loo")
+```
+The hierarchical model has the best predictive performance and the standard deviations
+of the differences are really small compared to the actual difference so they don't influence
+the decision.
+
+
+### (j)
+
+
+```{r}
+plot(loo(f1), label_points = TRUE)
+# Useful functions: plot(loo(...), label_points = TRUE)
+```
+```{r}
+plot(loo(f2), label_points = TRUE)
+# Useful functions: plot(loo(...), label_points = TRUE)
+```
+
+
+```{r}
+plot(loo(f3), label_points = TRUE)
+# Useful functions: plot(loo(...), label_points = TRUE)
+```
+The hierarchical model has around 2.5% observations with K statistic higher than 0.5 while 
+the pooled models have none. Looking at the chart these higher k statistic observations
+seem to be just a few distributed across the different diets.  
+Quickly looking they seem to be the more extreme values (highest and lowest weights)
+
+### (k)
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## Creating a dummy example plot 
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+:::
+::::
+
+
+
+
+```{r}
+high_chicken_rows = c(131,195,400,496)
+ChickWeight[high_chicken_rows,]
+```
+```{r}
+k_values = loo(f3)$diagnostics$pareto_k
+low_chicken_rows = order(k_values)[0:4]
+ChickWeight[low_chicken_rows,]
+```
+
+### Chickens with highest K
+
+```{r}
+# HIGH K 
+chicken_idxs = c(11,18,35,43)
+# Create this plot for your hierarchical model for selected chickens
+brms::pp_check(
+  f3, type = "intervals_grouped", group = "Chick", 
+  newdata=ChickWeight %>% filter(Chick %in% chicken_idxs)
+)
+```
+### Chickens with lowest K
+
+```{r}
+# LOW  K 
+chicken_idxs = c(4,10,33,20)
+# Create this plot for your hierarchical model for selected chickens
+brms::pp_check(
+  f3, type = "intervals_grouped", group = "Chick", 
+  newdata=ChickWeight %>% filter(Chick %in% chicken_idxs)
+)
+```
+
+
+We can see that the chickens with highest K are the ones with some extreme values (chicken 35 has the highest weight at time 21) and where the weight clearly has some kind of sigmoid shape, going up and then being more stable breaking the linear relationship.  
+Chicken 18 in the other hand only has two observations..
+
+Among the lowest K, chicken 4, 10 and 20 follow pretty well the linear relationship and the 
+predicted Y are quite similar to the really y in many times.  
+Chicken 33 differs but in the first observations is quite accurate and that's one of the
+lowest K observations.
+ 
+
+## Model comparison using the RMSE
+### (l)
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## `rmse` function implementation
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+
+The below function takes a brms fit object and computes either the [root-mean-square error (RMSE)](https://en.wikipedia.org/wiki/Root-mean-square_deviation) or the PSIS-LOO-RMSE, i.e. the RMSE using LOO-CV estimated using PSIS-LOO.
+```{r}
+# Compute RMSE or LOO-RMSE
+# rmse <- function(fit, use_loo=FALSE){
+#   mean_y_pred <- if(use_loo){
+#     colSums(weights(loo(fit, save_psis=TRUE)$psis, log=FALSE) * brms::posterior_predict(fit)) 
+#   }else{
+#     colMeans(brms::posterior_predict(fit)) 
+#   }
+#   sqrt(mean(
+#     (mean_y_pred - brms::get_y(fit))^2
+#   ))
+# }
+
+
+rmse <- function(fit, use_loo=FALSE){
+  mean_y_pred <- if(use_loo){
+    brms::loo_predict(fit) 
+  }else{
+    colMeans(brms::posterior_predict(fit)) 
+  }
+  sqrt(mean(
+    (mean_y_pred - brms::get_y(fit))^2
+  ))
+}
+```
+
+:::
+::::
+
+```{r}
+rmse_f1 = rmse(f1)
+rmse_f2 = rmse(f2)
+rmse_f3 = rmse(f3)
+```
+
+```{r, echo=FALSE}
+print("RMSE on the train data")
+print(rmse_f1)
+print(rmse_f2)
+print(rmse_f3)
+```
+
+
+
+```{r, warning=FALSE}
+rmse_loo_f1 = rmse(f1, use_loo = TRUE)
+rmse_loo_f2 = rmse(f2, use_loo = TRUE)
+rmse_loo_f3 = rmse(f3, use_loo = TRUE)
+```
+
+```{r,echo=FALSE}
+print("RMSE usgin LOO")
+print(rmse_loo_f1)
+print(rmse_loo_f2)
+print(rmse_loo_f3)
+```
+We can see that systematically the have a greater RMSE in LOO than in the full training data. The reason is that for LOO we don't use the evaluated observation for training so the posterior doesn't know about that particular value. In the other hand, the full RMSE has seen all the data before calculating the RMSE so it's not a good estimation of RMSE on future observations.

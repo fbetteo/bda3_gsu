@@ -1,0 +1,594 @@
+---
+title: "Assignment 9"
+subtitle: "Decision analysis"
+author: anonymous # <-- hand in anonymously
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true
+    number-sections: true
+    mainfont: Georgia, serif
+    # linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:
+    # documentclass: article
+    geometry:
+    - left=1cm,top=1cm,bottom=1cm,right=7cm
+    number-sections: true
+    code-annotations: none
+# reference-location: margin
+# citation-location: margin
+comments:
+  hypothesis: true
+editor: source
+---
+
+
+https://avehtari.github.io/BDA_course_Aalto/project_gsu.html
+
+# GSU Project 2023
+
+## Introduction
+
+The goal of this project is to model and predict the winner of an incoming basketball NBA game. There are probably multiple models for that but I haven't seen one explicitly bayesian and I think there are good reasons to try. The goal is to predict the points each team will score (some distribution of points) and compare those distributions to calculate the probability that a random draw from the distribution of team A for that game will be greater than the random draw from team B.  
+
+One problem modeling team points is that a team, as a "subject", is not stable. There are some patterns, like team historically more winners than other or usually candidate to win the title but with high variance. 
+
+* Each year the team composition can vary a lot depending on how active they are during the offseason trades and even during the course of the season there are trade dates where team can modify their roster greatly (as today, May 2023, the Lakers are a clear example acquiring 5 players during the latest trade deadline, including 2 starters.)  
+* Another common situation are injuries, players can lose multiple games or even be out for the rest of the season due to injuries and that can affect greatly the win probabilities of their teams.  
+* Lastly, new players enter the league each year and can completely change the situation of a team (ex, getting a superstar from college basketball)
+
+In order to counter that, the approach I would like to try is to model points per player. That will be the core of this work. With the distribution of points per player we can later aggregate for each game only the players that are available to play and we translate the model into the future even when rosters change drastically.  
+On top of that, the idea is to use a hierarchical model, so we can have a more stable prediction for players with low amount of games (low amount of observations) and even for rookies where we have 0 observation when they enter the league.
+
+![Diagram1](diagram1.png){width=100% height=100%}
+
+
+## Data
+
+The data is a processed dataset that I have created previously for other personal projects and for a presentation I had to do during my master's degree. The analysis done back then wasn't to predict point per player so this is novel with respect to that.  
+The raw data comes from the paid service of [Mysportsfeeds](https://www.mysportsfeeds.com/).  
+The main information we will use for this analysis is at the player-game level. This means, for each game we have how many points each player scored and other features such as if the game has home or away and how many hours each player rested since the last game.  
+Initially we will use the 2021-2022 season as our training data and latest games as any test data required.
+
+
+
+
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#| label: imports
+library(bayesplot)
+library(cmdstanr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggdist) # for stat_dotsinterval
+library(posterior)
+library(brms)
+# Globally specfiy cmdstan backend for brms
+options(brms.backend="cmdstanr")
+# Tell brms to cache results if possible
+options(brms.file_refit="on_change")
+
+# Set more readable themes with bigger font for plotting packages
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+```
+
+
+```{r, echo=FALSE}
+raw_data = read.csv("train.csv", header = TRUE)
+```
+
+```{r, echo=FALSE}
+cols_to_keep = c('playerId', 'firstName', 'lastName', 'position', 'teamId', 'startTime','pts', 'atHome', 'rest_hours')
+
+# One year of data to handle it easier and not using 2022 to get rookies (non seen) 
+# in test.
+train = raw_data %>%
+  select(all_of(cols_to_keep)) %>%
+  filter(startTime > '2021-08-01' &  startTime < '2022-08-01')
+
+new_player_id_df = data.frame(playerId = unique(train$playerId), new_player_id = seq(1:length(unique(train$playerId))))
+
+train = train %>% inner_join(new_player_id_df, by='playerId')
+
+# head(train)
+```
+
+
+Here are the first 5 records of the data.
+
+```{r, echo=FALSE}
+n_players = n_distinct(train$playerId)
+n_teams = n_distinct(train$teamId)
+min_date = substr(min(train$startTime),1,10)
+max_date = substr(max(train$startTime),1,10)
+```
+
+
+```{r}
+
+## FEO VER COMO EMPROLIJAR LA TABLA
+head(train) %>% 
+  knitr::kable(
+    format = "latex",
+    align = "l",
+    booktabs = TRUE,
+    longtable = TRUE,
+    linesep = "",
+    ) %>%
+  kableExtra::kable_styling(
+      position = "left",
+      latex_options = c("striped", "repeat_header"),
+      stripe_color = "gray!15"
+    )
+```
+
+
+```{r, echo=FALSE}
+obs_player = train %>%
+  group_by(playerId) %>%
+  summarise(total = n()) %>%
+  ungroup()
+```
+
+
+It has data from `r min_date`  to `r max_date`.  
+It contains `r dim(train)[1]` rows with `r n_players` players from `r n_teams` teams.
+Each player has on average `r round(mean(obs_player$total),0)` observations.  
+The lowest is `r round(min(obs_player$total),0)` and the maximum is `r round(max(obs_player$total),0)`  
+We have players with really low amount of samples.
+
+
+
+```{r}
+ggplot(data=train) +
+  geom_histogram(aes(x=pts), bins=50)
+```
+
+
+
+
+```{r}
+# lebron 30
+# green 57
+# tatum  217
+# doncic 268
+# giddey 504
+set.seed(11)
+N_SAMPLE_PLAYERS = 50
+
+# sample_players = c(30,57,217,268,504, 220, 160, 330, 110)
+sample_players = sample(seq(1,max(train$new_player_id)), N_SAMPLE_PLAYERS)
+
+train = train %>%
+  filter(new_player_id %in% sample_players)
+
+# RECREATE NEW_PLAYER_ID to go from 1 to N
+new_player_id_df = data.frame(playerId = unique(train$playerId), lastName =  unique(train$lastName), new_player_id = seq(1:length(unique(train$playerId))))
+
+train = train %>% select(-new_player_id) %>% inner_join(new_player_id_df, by=c('playerId', 'lastName'))
+# train
+```
+
+
+
+```{r fig.width=6, fig.height=6}
+subset_players = unique(train$playerId)[1:9]
+ggplot(data=train %>% filter(playerId %in% subset_players)) +
+  geom_histogram(aes(x=pts), alpha=0.6, bins=15) +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    ) +
+  facet_wrap(~lastName)
+```
+
+
+
+```{r}
+stan_data <- list(
+  N_observations = nrow(train),
+  N_players = length(unique(train$playerId)),
+  player_idx = train$new_player_id,
+  rest_hours = train$rest_hours, 
+  at_home = train$atHome,
+  pts = train$pts
+)
+
+
+```
+
+
+```{r}
+
+
+#| label: plot scatter centered parameterization
+
+# bayesplot::mcmc_scatter(x = fit_separate$draws(variables = c("mean_player[4]", "sd_player[4]")),
+#                         np = nuts_params(fit_separate)) +
+#   scale_y_log10() +
+#   labs(x = expression(mean_player[5]), y = expression(sd_player[5])) +
+#   ylim(c(0,NA))
+```
+
+```{r}
+
+# extract_variable(fit_separate, "mu_pred[1]")
+
+# NO ANDA NADAA
+# rstantools::posterior_predict(fit_separate, draws=10)
+
+
+```
+
+
+```{r}
+# pred_draws = fit_separate$draws(variables = "pts_pred", format="df") %>% select(-c('.chain', '.iteration', '.draw'))
+# 
+# sample_pred_draws = pred_draws[500:550,]
+# names(sample_pred_draws) = NULL
+# 
+# 
+# 
+# ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws))
+
+```
+```{r}
+# ppc_dens_overlay_grouped(y = train$pts[1:476], yrep=as.matrix(sample_pred_draws)[,1:476], group=train$lastName[1:476])
+```
+
+```{r}
+# ppc_intervals_grouped(y = train$pts, yrep=as.matrix(sample_pred_draws), group=train$lastName)
+```
+
+
+```{r}
+# fit_separate$loo()
+# 
+# asd = fit_separate$loo()
+# bb = fit_separate$loo()
+
+```
+
+```{r}
+# plot(asd, label_points = TRUE)
+```
+
+
+```{r}
+# brms::loo_compare(asd,bb)
+```
+```{r}
+# ver si pudeo implemetnar RMSE como en assignment 8. Creo que si.
+# rmse(fit_separate)
+```
+#### Separate rest hours 
+```{r}
+# FITTING
+model_separate_rest_hours <- cmdstan_model(stan_file = "separate_rest_hours.stan")
+
+# Sampling from the model happens here:
+fit_separate_rest_hours <- model_separate_rest_hours$sample(data = stan_data, refresh=0, parallel_chains  = 4,
+                                      show_messages=FALSE)
+
+fit_separate_rest_hours$save_object(file = "fit_separate_rest_hours.RDS")
+```
+```{r}
+fit_separate_rest_hours = readRDS("fit_separate_rest_hours.RDS")
+```
+
+
+
+```{r}
+fit_separate_rest_hours$cmdstan_diagnose()
+```
+
+```{r}
+
+fit_separate_rest_hours$summary(variables = c("int_player", "sd_player", "beta_rest", "lp__"))
+```
+
+```{r}
+convergence = fit_separate_rest_hours$summary(variables = c("int_player", "sd_player", "beta_rest", "lp__"))
+
+
+
+convergence_int = convergence %>% filter(stringr::str_detect(variable, 'int_player')) %>%
+  select(c(rhat, ess_bulk))
+
+
+
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=rhat))
+
+
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=ess_bulk))
+
+knitr::knit_exit()
+```
+```{r}
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=ess_bulk))
+```
+
+
+MIRAR RHAT DE ESA TABLA Y ESS. COMENTAR LAS DIVERGENCIAS. SUPONGO QUE NO HAGO NADA EXPLICITO PARA MEJORAR A ESTA ALTURA PORQUE HACERLO JERARQUICO ES LA IDEA DE SOLUCIONARLO.
+
+```{r}
+pred_draws = fit_separate_rest_hours$draws(variables = "pts_pred", format="df")  %>% group_by(.chain) %>%
+  filter(.iteration > 980) %>% ungroup() %>% select(-c('.chain', '.iteration', '.draw'))
+
+sample_pred_draws = pred_draws # [500:550,]
+names(sample_pred_draws) = NULL
+
+
+
+ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws))
+
+```
+
+```{r}
+fit_separate_rest_hours$loo()
+```
+
+##### Sensitivty
+RE FITEAR CON OTRO PRIOR??
+
+
+#### Hierarhcihcal rest
+
+
+```{r}
+hierarchical_rest <- cmdstan_model(stan_file = "hierarchical_rest_hours.stan")
+
+# Sampling from the model happens here:
+fit_hierarchical_rest <- hierarchical_rest$sample(data = stan_data, refresh=0, parallel_chains  = 4,
+                                      show_messages=FALSE)
+
+
+```
+
+```{r}
+
+fit_hierarchical_rest$summary(variables = c("mean_player", "sd_general", "beta_rest", "lp__"))
+```
+
+
+```{r}
+# model_separate$variables()
+mcmc_hist(fit_hierarchical_rest$draws("mean_player[9]"))
+
+# mean(fit_separate$draws(variables = 'pts_player'))
+
+
+
+```
+```{r}
+mcmc_hist(fit_hierarchical_rest$draws("mean_rookie"))
+```
+
+```{r}
+
+
+#| label: plot scatter centered parameterization
+
+bayesplot::mcmc_scatter(x = fit_hierarchical_rest$draws(variables = c("mean_general", "mean_rest")),
+                        np = nuts_params(fit_hierarchical_rest)) +
+  scale_y_log10() +
+  labs(x = expression(scale_general), y = expression(shape_general)) +
+  ylim(c(0,NA))
+```
+
+```{r}
+
+# extract_variable(fit_separate, "mu_pred[1]")
+
+# NO ANDA NADAA
+# rstantools::posterior_predict(fit_separate, draws=10)
+
+
+```
+
+
+```{r}
+pred_draws = fit_hierarchical_rest$draws(variables = "pts_pred", format="df") %>% select(-c('.chain', '.iteration', '.draw'))
+
+sample_pred_draws = pred_draws[3950:4000,]
+names(sample_pred_draws) = NULL
+
+
+
+ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws))
+
+```
+
+
+```{r}
+ppc_dens_overlay_grouped(y = train$pts[1:476], yrep=as.matrix(sample_pred_draws)[,1:476], group=train$lastName[1:476])
+```
+
+```{r}
+fit_hierarchical_rest$loo()
+```
+
+
+
+
+
+#### Hierarhichcal poisson
+
+
+
+```{r}
+hierarchical_poisson_no_covariate <- cmdstan_model(stan_file = "hierarchical_poisson.stan")
+
+# Sampling from the model happens here:
+fit_hierarchical_poisson_no_covariate <- hierarchical_poisson_no_covariate$sample(data = stan_data, refresh=0, parallel_chains  = 4,
+                                      show_messages=FALSE)
+
+
+```
+
+```{r}
+
+fit_hierarchical_poisson_no_covariate$summary(variables = c("lambda_player", "shape_general", "scale_general", "lp__"))
+```
+
+
+```{r}
+# model_separate$variables()
+mcmc_hist(fit_hierarchical_poisson_no_covariate$draws("lambda_player[9]"))
+
+# mean(fit_separate$draws(variables = 'pts_player'))
+
+
+
+```
+```{r}
+mcmc_hist(fit_hierarchical_poisson_no_covariate$draws("lambda_rookie"))
+```
+
+```{r}
+
+
+#| label: plot scatter centered parameterization
+
+bayesplot::mcmc_scatter(x = fit_hierarchical_poisson_no_covariate$draws(variables = c("scale_general", "shape_general")),
+                        np = nuts_params(fit_hierarchical_poisson_no_covariate)) +
+  scale_y_log10() +
+  labs(x = expression(scale_general), y = expression(shape_general)) +
+  ylim(c(0,NA))
+```
+
+```{r}
+
+# extract_variable(fit_separate, "mu_pred[1]")
+
+# NO ANDA NADAA
+# rstantools::posterior_predict(fit_separate, draws=10)
+
+
+```
+
+
+```{r}
+pred_draws = fit_hierarchical_poisson_no_covariate$draws(variables = "pts_pred", format="df") %>% select(-c('.chain', '.iteration', '.draw'))
+
+sample_pred_draws = pred_draws[3950:4000,]
+names(sample_pred_draws) = NULL
+
+
+
+ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws))
+
+```
+
+
+```{r}
+ppc_dens_overlay_grouped(y = train$pts[1:476], yrep=as.matrix(sample_pred_draws)[,1:476], group=train$lastName[1:476])
+```
+
+```{r}
+fit_hierarchical_poisson_no_covariate$loo()
+```
+
+
+
+#### hierarchical NegBin
+
+```{r}
+hierarchical_negbin_no_covariate <- cmdstan_model(stan_file = "hierarchical_negbin.stan")
+
+# Sampling from the model happens here:
+fit_hierarchical_negbin_no_covariate <- hierarchical_negbin_no_covariate$sample(data = stan_data, refresh=0, parallel_chains  = 4,
+                                      show_messages=FALSE)
+
+
+```
+
+```{r}
+
+fit_hierarchical_negbin_no_covariate$summary(variables = c("alpha_player", "beta_player", "alpha_general_1", "alpha_general_2", "beta_general_1", "beta_general_2", "lp__"))
+```
+
+
+```{r}
+# model_separate$variables()
+mcmc_hist(fit_hierarchical_negbin_no_covariate$draws("alpha_player[9]"))
+
+# mean(fit_separate$draws(variables = 'pts_player'))
+
+
+
+```
+```{r}
+mcmc_hist(fit_hierarchical_negbin_no_covariate$draws("alpha_rookie"))
+```
+
+```{r}
+
+
+#| label: plot scatter centered parameterization
+
+bayesplot::mcmc_scatter(x = fit_hierarchical_negbin_no_covariate$draws(variables = c("alpha_general_1", "alpha_general_2")),
+                        np = nuts_params(fit_hierarchical_negbin_no_covariate)) +
+  scale_y_log10() +
+  labs(x = expression(scale_general), y = expression(shape_general)) +
+  ylim(c(0,NA))
+```
+
+```{r}
+
+# extract_variable(fit_separate, "mu_pred[1]")
+
+# NO ANDA NADAA
+# rstantools::posterior_predict(fit_separate, draws=10)
+
+
+```
+
+
+```{r}
+pred_draws = fit_hierarchical_negbin_no_covariate$draws(variables = "pts_pred", format="df") %>% select(-c('.chain', '.iteration', '.draw'))
+
+sample_pred_draws = pred_draws[3950:4000,]
+names(sample_pred_draws) = NULL
+
+
+
+ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws))
+
+```
+
+
+```{r}
+ppc_dens_overlay_grouped(y = train$pts[1:476], yrep=as.matrix(sample_pred_draws)[,1:476], group=train$lastName[1:476])
+```
+
+```{r}
+fit_hierarchical_negbin_no_covariate$loo()
+```
+
+
+
+```{r}
+# PARA PASAR A RSTAN. NO ME SIRVIO DE NADA POR AHORA
+
+# stanfit_obj <- rstan::read_stan_csv(fit_separate$output_files())
+# 
+# loo(stanfit_obj)
+
+# 
+# rstantools::posterior_predict(stanfit_obj)
+```
+

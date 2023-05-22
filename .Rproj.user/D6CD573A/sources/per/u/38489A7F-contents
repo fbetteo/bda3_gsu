@@ -1,0 +1,3 @@
+remotes::install_github("avehtari/BDA_course_Aalto",
+                        subdir = "rpackage", upgrade="never")
+

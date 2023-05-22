@@ -1,0 +1,231 @@
+---
+title: "Assignment 9"
+subtitle: "Decision analysis"
+author: anonymous # <-- hand in anonymously
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true
+    number-sections: true
+    mainfont: Georgia, serif
+    # linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:
+    # documentclass: article
+    geometry:
+    - left=1cm,top=1cm,bottom=1cm,right=7cm
+    number-sections: true
+    code-annotations: none
+# reference-location: margin
+# citation-location: margin
+comments:
+  hypothesis: true
+editor: source
+---
+
+
+# General information
+
+This is the template for [assignment 9](assignment9.html). You can download the [qmd-file](https://raw.githubusercontent.com/avehtari/BDA_course_Aalto/gh-pages/assignments/template9.qmd) or copy the code from this rendered document after clicking on `</> Code` in the top right corner.
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## Setup
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+The following loads several needed packages:
+
+```{r}
+#| label: imports
+library(bayesplot)
+library(cmdstanr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggdist) # for stat_dotsinterval
+library(posterior)
+library(brms)
+# Globally specfiy cmdstan backend for brms
+options(brms.backend="cmdstanr")
+# Tell brms to cache results if possible
+options(brms.file_refit="on_change")
+
+# Set more readable themes with bigger font for plotting packages
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+```
+
+:::
+::::
+
+
+# Escaping from the chicken coop
+### (a)
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+### A simple GP model
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+The below fits a GP model to the chicken growth curves. It may take a few minutes to fit, but you 
+can also [download the fit `.rds`-file](https://raw.githubusercontent.com/avehtari/BDA_course_Aalto/gh-pages/assignments/gp_chicken_fit.rds) and work with that fit object. 
+
+```{r fit}
+
+fit <- brm(
+  weight ~ gp(Time) + (0+Time|Diet) + (0+Time|Chick),
+  data = ChickWeight,
+  family = "lognormal",
+  file="gp_chicken_fit"
+)
+brms::pp_check(fit, type = "intervals_grouped", group = "Diet")
+```
+
+:::
+::::
+
+### Expected chicken weight for days 1-40 per diet.
+
+For this we get the posterior prediction for new chicken (non-seen) that would 
+be equivalent to an offspring.  
+
+
+```{r}
+Chick = rep(30, each=4*40)
+Time = rep(seq(1,40), times=4)
+Diet = rep(seq(1,4), each=40)
+newdata = data.frame(Chick=Chick, Time=Time, Diet=as.factor(Diet))
+
+posterior_prediction = posterior_predict(fit, newdata = newdata, allow_new_levels=TRUE, sample_new_levels='gaussian')
+
+df = cbind(newdata, posterior_mean = colMeans(posterior_prediction))
+df['rownumber'] = seq.int(nrow(df)) 
+
+
+ggplot(data=df) + 
+  geom_line(aes(x=Time, y=posterior_mean, group=Diet,  color=Diet))
+```
+
+They look pretty much reasonable but I think something is weird in terms of how Time is treated
+after the value 21 that is the data we have. Diets 3 and 4 keep growing at almost the same rate
+with some bumps but diets 1 and 2 stay much lower, even 1 seems to stall. Not sure how the differences
+appear for time points after the maximum Time value  we have seen in the data.. Also 3 and 4 can make no sense neither if they keep growing at the same rate for ever.
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+###  Chickenwise probability of escape function
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+```{r}
+bump <- function(x, loc=0, scale=1){
+  xi = (x - loc) / scale
+  ifelse(abs(xi) < 1, exp(-1/(1-xi^2)), 0.)
+}
+daily_probability_of_escape <- function(day, weight){
+  # Expects a day and a weight and computes the daily probability of escape 
+  bump(day, 30, 10) * (1e-2 + bump(weight, 200, 150)+bump(weight, 700, 150))
+}
+chickenwise_probability_of_escape <- function(weights){
+  # Expects a vector of daily weights from day 1 to N and computes the probability of 
+  # escape at the end of the time series
+  prob_of_failure = 1
+  for(day in 1:length(weights)){
+    prob_of_failure = prob_of_failure * (1-daily_probability_of_escape(day, weights[day]))
+  }
+  return(1 - prob_of_failure)
+}
+```
+
+:::
+::::
+
+
+### (b)
+
+### Escape probabilities for 4000 draws (4000 chicken simulations) under each diet.
+```{r}
+
+total_results = vector("list")
+for(diet in 1:4){
+  diet_results = vector(mode="list", length=4000)
+  diet_df =  df %>% filter(Diet==diet)
+  
+  for (i_row in 1:dim(posterior_prediction)[1]){
+    
+    from = min(diet_df$rownumber)
+    to = max(diet_df$rownumber)
+    
+    diet_results[[i_row]] = 
+      chickenwise_probability_of_escape(posterior_prediction[i_row, from:to])
+  }  
+  total_results[[diet]] <- diet_results
+}
+
+df_2b =  data.frame(diet1=unlist(total_results[1]), 
+                    diet2=unlist(total_results[2]), 
+                    diet3=unlist(total_results[3]),
+                    diet4= unlist(total_results[4]))
+
+
+df_2b_long = df_2b %>% pivot_longer(cols=diet1:diet4, names_to="diet", 
+                                    values_to="probability")
+ggplot(data=df_2b_long, aes(x=probability, y=diet)) + 
+  stat_dotsinterval()
+```
+
+
+### (c)
+
+
+```{r}
+
+df_expected = df_2b_long %>% group_by(diet) %>%
+  summarise(expected = mean(probability))
+```
+
+```{r}
+wrong_total_results = vector("list")
+for(diet in 1:4){
+ 
+  diet_df =  df %>% filter(Diet==diet)
+  
+  wrong_total_results[[diet]] = 
+    chickenwise_probability_of_escape(diet_df$posterior_mean)
+}
+
+
+df_expected['wrong_expected'] = unlist(wrong_total_results)
+
+df_expected
+```
+
+It is wrong to compute the expected probability of escape with the expected chicken weight from 2a because that only takes into account the expected value discarding the tails and all values that can arise for each day and have a low probability of escaping compared to the expected value.  
+
+The correctly calculated expected escape probability is always lower because it takes into account all the uncertainty of the distribution, it accounts for all the values that have really low probability of escaping and that can happen despite the mean value having a larger escape probability.  
+The difference is not minor (around 0.1-0.15 pp).

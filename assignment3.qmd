@@ -1,0 +1,633 @@
+---
+title: "Assignment 3"
+author: anonymous # <-- hand in anonymously
+format: 
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true  
+    number-sections: true
+    mainfont: Georgia, serif
+    linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:  
+    documentclass: article
+    number-sections: true
+reference-location: margin
+citation-location: margin 
+comments:
+  hypothesis: true
+editor: source
+---
+
+
+# General information
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+ 
+## Setup 
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+            
+
+
+
+This is the template for [assignment 3](assignment3.html). You can download the qmd-files ([full](https://raw.githubusercontent.com/avehtari/BDA_course_Aalto/gh-pages/assignments/template3.qmd), [simple](https://raw.githubusercontent.com/avehtari/BDA_course_Aalto/gh-pages/assignments/simple_template3.qmd)) or copy the code from this rendered document after clicking on `</> Code` in the top right corner.
+
+**Please replace the instructions in this template by your own text, explaining what you are doing in each exercise.** 
+
+The following will set-up [`markmyassignment`](https://github.com/MansMeg/markmyassignment) to check your functions at the end of the notebook:
+ 
+```{r}
+if(!require(markmyassignment)){
+    install.packages("markmyassignment")
+    library(markmyassignment)
+}
+assignment_path = paste("https://github.com/avehtari/BDA_course_Aalto/",
+"blob/master/assignments/tests/assignment3.yml", sep="")
+set_assignment(assignment_path)    
+```       
+
+The following installs and loads the `aaltobda` package:
+```{r}
+if(!require(aaltobda)){
+    install.packages("remotes")
+    remotes::install_github("avehtari/BDA_course_Aalto", subdir = "rpackage", upgrade="never")
+    library(aaltobda)
+}
+```
+The following installs and loads the [`latex2exp` package](https://github.com/stefano-meschiari/latex2exp), which allows us to use LaTeX in plots:
+```{r}
+if(!require(latex2exp)){
+    install.packages("latex2exp")
+    library(latex2exp)
+}
+```
+
+:::
+::::
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-tip collapse=false}
+
+## Showcase: Setting up advanced packages (`posterior` and `ggdist`)
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+            
+
+
+*This block showcases advanced tools, which you will be allowed and expected to use after this assignment.*
+**For now, you should solve the assignment without the tools showcased herein.**
+
+
+
+
+The following installs and loads the [`posterior` package](https://mc-stan.org/posterior/index.html),
+which allows us to use its [`rvar` Random Variable Datatype
+](https://mc-stan.org/posterior/articles/rvar.html):
+```{r}
+if(!require(posterior)){
+    install.packages("posterior")
+    library(posterior)
+}
+```
+
+The following installs and loads the [`ggdist` package](https://mjskay.github.io/ggdist/)
+for advanced plotting functions:
+
+```{r}
+if(!require(ggplot2)){
+    install.packages("ggplot2")
+    library(ggplot2)
+}
+ggplot2::theme_set(theme_minimal(base_size = 14))
+if(!require(ggdist)){
+    install.packages("ggdist")
+    library(ggdist)
+}
+```
+
+
+
+*This block showcases advanced tools, which you will be allowed and expected to use after this assignment.*
+**For now, you should solve the assignment without the tools showcased herein.**
+
+
+
+:::
+::::
+    
+
+# Inference for normal mean and deviation (3 points) 
+
+**Loading the library and the data.**
+``` {r}
+data("windshieldy1")
+# The data are now stored in the variable `windshieldy1`.
+# The below displays the data:
+windshieldy1
+```
+The below data is **only for the tests**, you need to change to the
+full data `windshieldy1` when reporting your results.
+``` {r}
+windshieldy_test <- c(13.357, 14.928, 14.896, 14.820)
+```
+
+
+## (a)
+
+$$Likelihood: p(y| \mu, \sigma^2) \propto \sigma^{-n} \exp{(-\frac{1}{2\sigma^2} \sum_{i=1}^n(y_i - \mu)^2)}$$
+$$prior: p(\mu, \sigma^2) \propto \frac{1}{\sigma^2}$$
+$$posterior: p(\mu, \sigma^2 | y) \propto \sigma^{-n-2} \exp{(-\frac{1}{2\sigma^2} \sum_{i=1}^n(y_i - \mu)^2)} $$
+
+
+
+## (b)
+
+
+Under non informative prior the marginal posterior for normalized $\mu$ has distribution ~$t_{n_1}$  
+The unknown $\mu$ lies with 95% confidence  between 13.47808 15.74436, and the mean of it's distribution is  14.61122
+
+**Keep the below name and format for the functions to work with `markmyassignment`:**
+```{r}
+# Useful functions: mean(), length(), sqrt(), sum()
+# and qtnew(), dtnew() (from aaltobda)
+
+
+mu_point_est <- function(data) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y_mean = mean(data)
+    n = length(data)
+    sd = sqrt(sum((data - y_mean)**2)/(n-1))
+    
+    mean_estimate= qtnew(0.5, df=n-1, mean=y_mean, scale=(sd/sqrt(n)))
+    mean_estimate
+    
+}
+mu_interval <- function(data, prob = 0.95) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y_mean = mean(data)
+    n = length(data)
+    sd = sqrt(sum((data - y_mean)**2)/(n-1))
+    
+    low_estimate= qtnew((1-prob)/2, df=n-1, y_mean, (sd/sqrt(n)))
+    
+    high_estimate= qtnew(1-(1-prob)/2, df=n-1,  y_mean, (sd/sqrt(n)))
+    c(low_estimate, high_estimate)
+    # c(13.3, 15.7)
+    
+}
+# mu_point_est(windshieldy1)
+# mu_interval(windshieldy1)
+```
+
+You can plot the density as below if you implement `mu_pdf` to compute the PDF of the posterior $p(\mu|y)$ of the average hardness $\mu$.
+
+```{r}
+#| label: fig-2b-density
+#| fig-cap: PDF of the posterior $p(\mu|y)$ of the average hardness $\mu$
+mu_pdf <- function(data, x){
+    # Compute necessary parameters here.
+    # These are the correct parameters for `windshieldy_test` 
+    # with the provided uninformative prior.
+    location = mean(data)
+    df = length(data)-1
+    scale = sqrt(sum((data - location)**2)/df)
+    # df = 3
+    # location = 14.5
+    # scale = 0.3817557
+    # Use the computed parameters as below to compute the PDF:
+     
+    dtnew(x, df, location, scale)
+}
+
+x_interval = mu_interval(windshieldy1, .999)
+lower_x = x_interval[1]
+upper_x = x_interval[2]
+x = seq(lower_x, upper_x, length.out=1000)
+plot(
+    x, mu_pdf(windshieldy1, x), type="l", 
+    xlab=TeX(r'(average hardness $\mu$)'), 
+    ylab=TeX(r'(PDF of the posterior $p(\mu|y)$)')
+)
+```
+
+
+## (c)
+
+
+The posterior predictive distribution for a future observation given the uninformative prior and the likelihood following a normal distribution is distributed as $\tilde{y} \sim t_{n-1} \text{with location = }\bar y \text{ and scale = } (1+\frac{1}{n}^{1/2})*s$
+
+**Keep the below name and format for the functions to work with `markmyassignment`:**
+```{r}
+# Useful functions: mean(), length(), sqrt(), sum()
+# and qtnew(), dtnew() (from aaltobda)
+
+mu_pred_point_est <- function(data) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y_mean = mean(data)
+    n = length(data)
+    sd = sqrt(sum((data - y_mean)**2)/(n-1))
+    
+    mean_estimate= qtnew(0.5, df=n-1, mean=y_mean, scale=sd*(1+1/n)^(1/2))
+    mean_estimate
+    # 14.5
+    
+}
+mu_pred_interval <- function(data, prob = 0.95) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y_mean = mean(data)
+    n = length(data)
+    sd = sqrt(sum((data - y_mean)**2)/(n-1))
+    
+    low_estimate= qtnew((1-prob)/2, df=n-1, mean=y_mean,scale=sd*(1+1/n)^(1/2))
+    
+    high_estimate= qtnew(1-(1-prob)/2, df=n-1,  mean=y_mean, scale=sd*(1+1/n)^(1/2))
+    c(low_estimate, high_estimate)
+    # c(11.8, 17.2)
+    
+}
+
+mu_pred_point_est(windshieldy_test)
+mu_pred_interval(windshieldy_test)
+```
+
+You can plot the density as below if you implement `mu_pred_pdf` to compute the PDF of the posterior predictive $p(\tilde{y}|y)$ of a new hardness observation $\tilde{y}$.
+
+```{r}
+#| label: fig-2c-density
+#| fig-cap: PDF of the posterior predictive $p(\tilde{y}|y)$ of a new hardness observation $\tilde{y}$
+mu_pred_pdf <- function(data, x){
+    # Compute necessary parameters here.
+    # These are the correct parameters for `windshieldy_test` 
+    # with the provided uninformative prior.
+    df = 4
+    location = 14.5
+    scale = 1.553903
+    # Use the computed parameters as below to compute the PDF:
+     
+    dtnew(x, df, location, scale)
+}
+
+x_interval = mu_pred_interval(windshieldy1, .999)
+lower_x = x_interval[1]
+upper_x = x_interval[2]
+x = seq(lower_x, upper_x, length.out=1000)
+plot(
+    x, mu_pred_pdf(windshieldy1, x), type="l", 
+    xlab=TeX(r'(new hardness observation $\tilde{y}$)'), 
+    ylab=TeX(r'(PDF of the posterior predictive $p(\tilde{y}|y)$)')
+)
+```
+
+
+# Inference for the difference between proportions (3 points) 
+## (a)
+
+Using independent distributions.  
+P0
+$$\text{likelihood:} p(y|p_0) \propto p_0^{39} * (1-p_0)^{635}$$
+$$\text{prior:} p(p_0) \propto p_0^{\alpha -1}*(1-p_0)^{\beta - 1}$$
+$$\text{posterior:} p(p_0|y) \propto Beta(\alpha + 39, \beta + 674 - 39)$$
+
+P1
+$$\text{likelihood:} p(y|p_1) \propto p_1^{22} * (1-p_1)^{658}$$
+$$\text{prior:} p(p_1) \propto p_1^{\alpha -1}*(1-p_1)^{\beta - 1}$$
+$$\text{posterior:} p(p_1|y) \propto Beta(\alpha + 22, \beta + 680 - 22)$$
+
+## (b)
+
+Assuming uninformative uniform prior distributions for p0 and p1 (control and treatment) we find that that the mean odds ratio is 0.57 and that the 0.95 credible interval is [0.32, 0.92]. The probability is 0.95 that the true treatment effect is in the interval [0.32, 0.92].
+This means that with high probability the patients in treatment group are less likely to die.
+
+The below data is **only for the tests**:
+``` {r}
+set.seed(4711)
+no_samples = 1000
+p0 = rbeta(no_samples, 5, 95)
+p1 = rbeta(no_samples, 10, 90)
+```
+
+**Keep the below name and format for the functions to work with `markmyassignment`:**
+```{r}
+# Actual data
+set.seed(4711)
+no_samples = 1000
+p0_data = rbeta(no_samples, 40, 636)
+p1_data = rbeta(no_samples, 23, 659 )
+```
+
+```{r}
+# Useful function: mean(), quantile()
+
+posterior_odds_ratio_point_est <- function(p0, p1) {
+    odds_ratio = (p1 / (1-p1)) / (p0 / (1-p0))
+    mean_odds_ratio = mean(odds_ratio)
+    mean_odds_ratio
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    # 2.650172
+    
+}
+posterior_odds_ratio_interval <- function(p0, p1, prob = 0.95) {
+    odds_ratio = (p1 / (1-p1)) / (p0 / (1-p0))
+    
+    left_tail = (1-prob)/2
+    right_tail =  1 - left_tail
+    
+    c(quantile(odds_ratio, probs=c(left_tail, right_tail)))
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    # c(0.6796942,7.3015964)
+    
+}
+
+posterior_odds_ratio_point_est(p0_data, p1_data) # 0.57
+posterior_odds_ratio_interval(p0_data, p1_data) # 0.3221829 0.9220926 
+```
+```{r, message=FALSE}
+library(dplyr)
+library(tidyr)
+
+odds_ratio = (p1_data / (1-p1_data)) / (p0_data / (1-p0_data))
+hist(odds_ratio)
+# data = data.frame(group = c(replicate(no_samples, "control"), replicate(no_samples, "treatment")))
+# data = data %>% mutate(parameter = c(p0_data, p1_data))
+# 
+# ggplot(data= data) + 
+#   geom_histogram(aes(parameter, color=group), fill="white", alpha=0.2, position='identity')
+```
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-tip collapse=false}
+ 
+## Showcase: advanced tools (`posterior`'s `rvar`, `ggdist`'s `stat_dotsinterval`)
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+            
+
+
+*This block showcases advanced tools, which you will be allowed and expected to use after this assignment.*
+**For now, you should solve the assignment without the tools showcased herein.**
+
+
+
+
+The `posterior` package's random variable datatype `rvar` is a 
+["sample-based representation of random variables"](https://mc-stan.org/posterior/articles/rvar.html#:~:text=sample%2Dbased%20representation%20of%20random%20variables)
+which makes handling of random samples such as the ones contained in the above variables `p0` and `p1` easier. 
+[By default, it prints as the mean and standard deviation of the samples](https://mc-stan.org/posterior/articles/rvar.html#:~:text=The%20default%20display%20of%20an%20rvar%20shows%20the%20mean%20and%20standard%20deviation%20of%20each%20element%20of%20the%20array.), **such that `rvar(p0)` prints as `r rvar(p0)` and `rvar(p1)` prints as `r rvar(p1)`**. 
+
+The datatype is ["designed to [...] be able to be used inside `data.frame()`s and `tibble()`s, and to be used with distribution visualizations in the ggdist package."](https://mc-stan.org/posterior/articles/rvar.html#:~:text=designed%20to%20interoperate%20with%20vectorized%20distributions%20in%20the%20distributional%20package%2C%20to%20be%20able%20to%20be%20used%20inside%20data.frame()s%20and%20tibble()s%2C%20and%20to%20be%20used%20with%20distribution%20visualizations%20in%20the%20ggdist%20package.)
+The code below sets up an [R `data.frame()`](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/data.frame) with the samples in `p0` and `p1` wrapped in an `rvar`, and uses that data frame to visualize the samples using [`ggdist`](https://mjskay.github.io/ggdist/index.html), an R package building on [`ggplot2`](https://ggplot2.tidyverse.org/) and ["designed for both frequentist and Bayesian uncertainty visualization"](https://mjskay.github.io/ggdist/index.html#:~:text=designed%20for%20both%20frequentist%20and%20Bayesian%20uncertainty%20visualization). 
+
+The below plot, @fig-showcase-probabilities uses `ggdist`'s [`stat_dotsinterval()`](https://mjskay.github.io/ggdist/articles/dotsinterval.html), which by default visualizes  
+
+* [an `rvar`'s median and central 66% and 95% intervals](https://mjskay.github.io/ggdist/reference/stat_dotsinterval.html#:~:text=point_interval%20%3D%20%22median_qi%22%2C%0A%20%20.width%20%3D%20c(0.66%2C%200.95)%2C) using a black dot and lines of varying thicknesses as when using `ggdist`'s [`stat_pointinterval()`](https://mjskay.github.io/ggdist/reference/stat_pointinterval.html#examples) and
+* an `rvar`'s samples using grey dots as when using `ggdist`'s [`stat_dots()`](https://mjskay.github.io/ggdist/reference/stat_dots.html#examples):
+
+```{r}
+#| label: fig-showcase-probabilities
+#| fig-cap: Probabilities of death for the two patient groups.
+r0 = rvar(p0_data)
+r1 = rvar(p1_data)
+ggplot(data.frame(
+    rv_name=c("control", "treatment"), rv=c(r0, r1)
+)) +
+    aes(xdist=rv, y=rv_name) + 
+    labs(x="probabilities of death", y="patient group") + 
+    stat_dotsinterval()
+```
+
+`rvar`s make it easy to compute functions of random variables, such as 
+
+* differences, e.g. $p_0 - p_1$: `r0 - r1` computes an `rvar` which prints as `r r0 - r1`, indicating the **sample mean** and the **sample standard deviation** of the difference of the probabilities of death,
+* products, e.g. $p_0 \, p_1$: `r0 * r1` computes an `rvar` which prints as `r r0 * r1` which in this case
+has no great interpretation, or 
+* the odds ratios needed in task 3.b).
+
+Below, in @fig-showcase-odds-ratios, we compute the odds ratios using the `rvar`s and visualize its median, central intervals and samples, as above in @fig-showcase-probabilities: 
+```{r}
+#| label: fig-showcase-odds-ratios
+#| fig-cap: Odds ratios of the two patient groups.
+rodds_ratio = (r1/(1-r1))/(r0/(1-r0))
+ggplot(data.frame(
+    rv=c(rodds_ratio)
+)) +
+    aes(xdist=rv) + 
+    labs(x="odds ratio", y="relative amount of samples") + 
+    stat_dotsinterval()
+```
+
+You can use @fig-showcase-odds-ratios to visually check whether the answers you computed for 3.b) make sense.
+
+
+
+*This block showcases advanced tools, which you will be allowed and expected to use after this assignment.*
+**For now, you should solve the assignment without the tools showcased herein.**
+
+
+
+:::
+::::
+    
+
+## (c)
+
+Comparing the uniform prior with a beta distribution prior with parameters 50/100 (roughly 50% of deaths in each group) we see that the posterior odds ratio are shifted towards the 1, meaning that data shows a probable effect of treatment but observations are not enough to totally dominate the prior and have an effect as strong as with the uniform prior.
+
+```{r}
+# Uniform prior
+set.seed(4711)
+no_samples = 1000
+p0_data = rbeta(no_samples, 40, 636)
+p1_data = rbeta(no_samples, 23, 659 )
+odds_ratio_uniform = (p1_data / (1-p1_data)) / (p0_data / (1-p0_data))
+
+# 50/100
+p0_data_2 = rbeta(no_samples, 89, 685)
+p1_data_2 = rbeta(no_samples, 72, 708 )
+odds_ratio_50_100 = (p1_data_2 / (1-p1_data_2)) / (p0_data_2 / (1-p0_data_2))
+
+
+
+
+dataplot = data.frame(group = c(replicate(no_samples, "uniform"), replicate(no_samples, "beta_50_100")))
+dataplot = dataplot %>% mutate(odds_ratio = c(odds_ratio_uniform,odds_ratio_50_100)
+                       )
+ggplot(data=dataplot) +
+  geom_histogram(aes(x=odds_ratio, colour=group),  fill="white", alpha=0.2, position='identity')
+# data = data %>% pivot_longer(!x, names_to = "odds_ratio", values_to = "density")
+
+```
+
+
+# Inference for the difference between normal means (3 points) 
+
+**Loading the library and the data.**
+``` {r}
+data("windshieldy2")
+# The new data are now stored in the variable `windshieldy2`.
+# The below displays the first few rows of the new data:
+head(windshieldy2)
+```
+
+
+## (a)
+
+windshieldy1
+$$Likelihood: p(y| \mu_1, \sigma_1^2) \propto \sigma_1^{-n_1} \exp{(-\frac{1}{2\sigma_1^2} \sum_{i=1}^n(y_{1i} - \mu_1)^2)}$$
+$$prior: p(\mu_1, \sigma_1^2) \propto \frac{1}{\sigma_1^2}$$
+$$posterior: p(\mu_1, \sigma_1^2 | y_1) \propto \sigma_1^{-n_1-2} \exp{(-\frac{1}{2\sigma_1^2} \sum_{i=1}^n(y_{1i} - \mu_1)^2)} $$
+
+Same for windshieldy2 but with it's corresponding subscript.
+
+
+## (b)
+
+
+**Write your answers and code here!** 
+```{r}
+
+mu_diff_point_est <- function(data1, data2) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y1_mean = mean(data1)
+    n_1 = length(data1)
+    sd_1 = sqrt(sum((data1 - y1_mean)**2)/(n_1-1))
+    posterior1 = rtnew(1000, df=n_1-1, mean=y1_mean, scale=(sd_1/sqrt(n_1)))
+    
+    y2_mean = mean(data2)
+    n_2 = length(data2)
+    sd_2 = sqrt(sum((data2 - y2_mean)**2)/(n_2-1))
+    posterior2 = rtnew(1000, df=n_2-1, mean=y2_mean, scale=(sd_2/sqrt(n_2)))
+    
+    mu_diff = posterior1 - posterior2
+    mean(mu_diff)
+}
+
+mu_diff_interval <- function(data1, data2, prob=0.95) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y1_mean = mean(data1)
+    n_1 = length(data1)
+    sd_1 = sqrt(sum((data1 - y1_mean)**2)/(n_1-1))
+    posterior1 = rtnew(1000, df=n_1-1, mean=y1_mean, scale=(sd_1/sqrt(n_1)))
+    
+    y2_mean = mean(data2)
+    n_2 = length(data2)
+    sd_2 = sqrt(sum((data2 - y2_mean)**2)/(n_2-1))
+    posterior2 = rtnew(1000, df=n_2-1, mean=y2_mean, scale=(sd_2/sqrt(n_2)))
+    
+    mu_diff = posterior1 - posterior2
+    
+    low = (1-prob)/2
+    high = 1 -low
+    c(quantile(mu_diff, c(low, high)))
+}
+
+plot_difference <- function(data1, data2){
+    y1_mean = mean(data1)
+    n_1 = length(data1)
+    sd_1 = sqrt(sum((data1 - y1_mean)**2)/(n_1-1))
+    posterior1 = rtnew(1000, df=n_1-1, mean=y1_mean, scale=(sd_1/sqrt(n_1)))
+    
+    y2_mean = mean(data2)
+    n_2 = length(data2)
+    sd_2 = sqrt(sum((data2 - y2_mean)**2)/(n_2-1))
+    posterior2 = rtnew(1000, df=n_2-1, mean=y2_mean, scale=(sd_2/sqrt(n_2)))
+    
+    mu_diff = posterior1 - posterior2
+    hist(mu_diff)
+}
+
+# Useful functions: mean(), length(), sqrt(), sum(),
+# rtnew() (from aaltobda), quantile() and hist().
+```
+
+```{r}
+mu_diff_point_est(windshieldy1, windshieldy2)
+```
+
+```{r}
+mu_diff_interval(windshieldy1, windshieldy2)
+```
+```{r}
+plot_difference(windshieldy1, windshieldy2)
+```
+Assuming uninformative uniform prior distributions for $\mu$ and $\sigma^2$ of both groups we find that that the mean difference in mu is -1.23 and that the 0.95 credible interval is -2.345138407 -0.005582468. The probability is 0.95 that the true mean difference is in the interval -2.345138407 -0.005582468.
+This means that with high probability the hardness is the first production line is lower than in the second one.
+## (c)
+
+
+Since the hardness is a continuous variable I think it's not possible to determine if the means are exactly the same, we could get a density for the mean difference = 0 but that's it.
+
+What we can do is to calculate the probability of a small interval containing 0. 
+The probability the mu difference is between -0.05 and 0.05 is around 0.7%
+```{r}
+mu_zero_interval <- function(data1, data2, sides=0.05) {
+    # Do computation here, and return as below.
+    # This is the correct return value for the test data provided above.
+    y1_mean = mean(data1)
+    n_1 = length(data1)
+    sd_1 = sqrt(sum((data1 - y1_mean)**2)/(n_1-1))
+    posterior1 = rtnew(1000, df=n_1-1, mean=y1_mean, scale=(sd_1/sqrt(n_1)))
+    
+    y2_mean = mean(data2)
+    n_2 = length(data2)
+    sd_2 = sqrt(sum((data2 - y2_mean)**2)/(n_2-1))
+    posterior2 = rtnew(1000, df=n_2-1, mean=y2_mean, scale=(sd_2/sqrt(n_2)))
+    
+    mu_diff = posterior1 - posterior2
+    
+    low = 0 - sides
+    high = 0  + sides
+    inrange = sum(mu_diff > low & mu_diff < high)
+    n  = length(mu_diff)
+    inrange/n
+}
+```
+```{r}
+mu_zero_interval(windshieldy1, windshieldy2)
+```
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## markmyassignment
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+            
+
+
+The following will check the functions for which `markmyassignment` has been set up:
+ 
+```{r}
+mark_my_assignment()    
+```      
+
+:::
+::::

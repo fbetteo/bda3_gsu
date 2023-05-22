@@ -1,0 +1,666 @@
+---
+title: "Modeling points per player in the NBA"
+author: Franco Betteo
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true
+    number-sections: true
+    mainfont: Georgia, serif
+    # linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:
+    # documentclass: article
+    geometry:
+    - left=1cm,top=1cm,bottom=1cm,right=1cm
+    number-sections: true
+    code-annotations: none
+# reference-location: margin
+# citation-location: margin
+comments:
+  hypothesis: true
+editor: source
+---
+
+
+# GSU Project 2023
+
+## Introduction
+
+The goal of this project is to model and predict the winner of an incoming basketball NBA game. There are probably multiple models for that but I haven't seen one explicitly bayesian and I think there are good reasons to try. The goal is to predict the points each team will score (some distribution of points) and compare those distributions to calculate the probability that a random draw from the distribution of team A for that game will be greater than the random draw from team B.  
+
+One problem modeling team points is that a team, as a "subject", is not stable. There are some patterns, like teams historically more winners than others or usually candidates to win the title but with high variance. 
+
+* Each year the team composition can vary a lot depending on how active they are during the offseason trades and even during the course of the season there are trade dates where a team can modify their roster greatly (as today, May 2023, the Lakers are a clear example acquiring 5 players during the latest trade deadline, including 2 starters.)  
+* Another common situation are injuries, players can lose multiple games or even be out for the rest of the season due to injuries and that can affect greatly the win probabilities of their teams.  
+* Lastly, new players enter the league each year and can completely change the situation of a team (ex, getting a superstar from college basketball)
+
+In order to counter that, the approach I would like to try is to model points per player. That will be the core of this work. With the distribution of points per player we can later aggregate for each game only the players that are available to play and we can use the model in the future even when rosters change drastically.  
+On top of that, the idea is to use a hierarchical model, so we can have a more stable prediction for players with low amount of games (low amount of observations) and even for rookies where we have 0 observation when they enter the league.
+
+![From players to teams](diagram1.png){width=100% height=100%}
+
+
+## Data
+
+The data is a processed dataset that I have created previously for other personal projects and for a presentation I had to do during my master's degree. The analysis done back then wasn't to predict points per player so this is novel with respect to that.  
+The raw data comes from the paid service of [Mysportsfeeds](https://www.mysportsfeeds.com/).  
+The main information we will use for this analysis is at the player-game level. This means, for each game we have how many points each player scored and other features such as if the game has home or away and how many hours each player rested since the last game.  
+Initially we will use the 2021-2022 season as our training data and latest games as any test data required.  
+On top of this, at the modeling time I'm taking a random sample of 50 players because an initial test on full data took multiple hours to run and more complex models didn't start to sample in my computer.  
+Not sure if it's because of my computer, bad priors or bad specification not allowing correct sampling or actually it was fine but computations are hard.
+
+
+
+
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#| label: imports
+library(bayesplot)
+library(cmdstanr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggdist) # for stat_dotsinterval
+library(posterior)
+library(brms)
+# Globally specfiy cmdstan backend for brms
+options(brms.backend="cmdstanr")
+# Tell brms to cache results if possible
+options(brms.file_refit="on_change")
+
+# Set more readable themes with bigger font for plotting packages
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+```
+
+
+```{r, echo=FALSE}
+raw_data = read.csv("train.csv", header = TRUE)
+```
+
+```{r, echo=FALSE}
+cols_to_keep = c('playerId', 'firstName', 'lastName', 'position', 'teamId', 'startTime','pts', 'atHome', 'rest_hours')
+
+# One year of data to handle it easier and not using 2022 to get rookies (non seen) 
+# in test.
+train = raw_data %>%
+  select(all_of(cols_to_keep)) %>%
+  filter(startTime > '2021-08-01' &  startTime < '2022-08-01')
+
+new_player_id_df = data.frame(playerId = unique(train$playerId), new_player_id = seq(1:length(unique(train$playerId))))
+
+train = train %>% inner_join(new_player_id_df, by='playerId')
+
+# head(train)
+```
+
+
+Here are the first 6 records of the data.
+
+```{r, echo=FALSE}
+n_players = n_distinct(train$playerId)
+n_teams = n_distinct(train$teamId)
+min_date = substr(min(train$startTime),1,10)
+max_date = substr(max(train$startTime),1,10)
+```
+
+
+```{r, echo=FALSE}
+set.seed(24)
+sample_rows <- sample(nrow(train))[1:6]
+head(train[sample_rows,] %>% select(-new_player_id)) %>% 
+  knitr::kable(
+    format = "latex",
+    align = "l",
+    booktabs = TRUE,
+    longtable = TRUE,
+    linesep = "",
+    ) %>%
+  kableExtra::kable_styling(
+      position = "left",
+      latex_options = c("striped", "repeat_header"),
+      stripe_color = "gray!15"
+    )
+```
+
+
+```{r, echo=FALSE}
+obs_player = train %>%
+  group_by(playerId) %>%
+  summarise(total = n()) %>%
+  ungroup()
+```
+
+
+It has data from `r min_date`  to `r max_date`.  
+It contains `r dim(train)[1]` rows with `r n_players` players from `r n_teams` teams.
+Each player has on average `r round(mean(obs_player$total),0)` observations.  
+The lowest is `r round(min(obs_player$total),0)` and the maximum is `r round(max(obs_player$total),0)`  
+We have players with really low amount of samples where hierarchical model can be useful.
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(data=train) +
+  geom_histogram(aes(x=pts), bins=50) +
+  xlab("Points per game") + 
+  ggtitle("Distribution of points per player per game")
+```
+
+
+
+
+```{r, echo=FALSE}
+# lebron 30
+# green 57
+# tatum  217
+# doncic 268
+# giddey 504
+set.seed(11)
+N_SAMPLE_PLAYERS = 50
+
+# sample_players = c(30,57,217,268,504, 220, 160, 330, 110)
+sample_players = sample(seq(1,max(train$new_player_id)), N_SAMPLE_PLAYERS)
+
+train = train %>%
+  filter(new_player_id %in% sample_players)
+
+# RECREATE NEW_PLAYER_ID to go from 1 to N
+new_player_id_df = data.frame(playerId = unique(train$playerId), lastName =  unique(train$lastName), new_player_id = seq(1:length(unique(train$playerId))))
+
+train = train %>% select(-new_player_id) %>% inner_join(new_player_id_df, by=c('playerId', 'lastName'))
+# train
+```
+
+
+
+```{r fig.width=6, fig.height=6, echo=FALSE, warning=FALSE, message=FALSE}
+subset_players = unique(train$playerId)[1:9]
+ggplot(data=train %>% filter(playerId %in% subset_players)) +
+  geom_histogram(aes(x=pts), alpha=0.6, bins=15) +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    ) +
+  facet_wrap(~lastName) +
+  xlab("Points per gmae") + 
+  ggtitle("Distribution of points for some random players")
+```
+
+
+
+```{r, echo=FALSE}
+stan_data <- list(
+  N_observations = nrow(train),
+  N_players = length(unique(train$playerId)),
+  player_idx = train$new_player_id,
+  rest_hours = train$rest_hours, 
+  at_home = train$atHome,
+  pts = train$pts
+)
+
+
+```
+
+## Models to fit.
+First we will fit a no pooled linear regression where points per game is the target variable and each player will have an intercept coefficient and there will be a unique coefficient for the impact on points of resting hours between matches. The assumption is that players score more if they are allowed to rest more. Obviously there is a limit to that and probably it's not a linear effect but we will start from that and the data is clipped to 72 hours rest, so any longer distance between matches is as if was 3 days.
+
+Later we will reproduce this same model but instead of having a no pooled model we will use a hierarchical model where the intercept for each player is no longer completely separate from the others but they all come from a common distribution. 
+The resting hours will also be per player but coming from a general distribution.
+
+For both cases we will use the normal likelihood as the players seem to have an approximately symmetrical distribution of points. I'm aware there are multiple problems with this such as:  
+* allows for negative points and will draw negative values
+* expects negative values for players with low mean and we now it is truncated at 0
+* points per player are discrete   
+
+but despite that the normal distribution can do a not so poor job and I'm more familiar on how to fit that on Stan and I want to avoid any caveat and required experimentation with other likelihoods.
+
+
+## Priors 
+For the No pooled model each player will have a weakly informative Normal prior for the $\mu$ with large variance to let the data speak.  
+For the standard deviation each player will have an exponential prior but also allowing for a wide range of values.  
+The coefficient for rest hours will also have a weakly informative exponential prior. Exponential because we want as well the coefficient to be positive.
+
+
+
+For the Hierarchical model each player will have their intercept coming from a truncated normal distribution, the standard deviation  again from an exponential and the rest hours coefficient also from a truncated normal distribution.  
+The super population parameters all come also from weakly informative truncated Normal distributions. All truncated because every coefficient makes sense if they are positive.  
+Probably there are better ways to do this but truncating and using normal distributions worked for sampling and to get positive coefficients.
+
+
+## Model configuration
+For model fitting I'm using cmdstan with a .stan file with the definition of the model. I'm using parallelization of the chains.  
+In the appendix you can find both stan codes.
+
+## No pooled model
+
+
+```{r}
+# # FITTING
+# model_separate_rest_hours <- cmdstan_model(stan_file = "separate_rest_hours.stan")
+# 
+# # Sampling from the model happens here:
+# fit_separate_rest_hours <- model_separate_rest_hours$sample(data = stan_data, refresh=0, parallel_chains  = 4,
+#                                       show_messages=FALSE)
+# 
+# fit_separate_rest_hours$save_object(file = "fit_separate_rest_hours.RDS")
+```
+```{r}
+fit_separate_rest_hours = readRDS("fit_separate_rest_hours.RDS")
+```
+
+
+
+```{r, echo=FALSE}
+fit_separate_rest_hours$cmdstan_diagnose()
+```
+```{r, echo=FALSE}
+
+head(fit_separate_rest_hours$summary(variables = c("int_player", "sd_player", "beta_rest", "lp__")) %>% select(-mad)) %>% 
+  knitr::kable(
+    format = "latex",
+    align = "l",
+    booktabs = TRUE,
+    longtable = TRUE,
+    linesep = "",
+    ) %>%
+  kableExtra::kable_styling(
+      position = "left",
+      latex_options = c("striped", "repeat_header", "scale_down"),
+      stripe_color = "gray!15"
+    )
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+convergence = fit_separate_rest_hours$summary(variables = c("int_player", "sd_player", "beta_rest", "lp__"))
+
+
+
+convergence_int = convergence %>% filter(stringr::str_detect(variable, 'int_player')) %>%
+  select(c(rhat, ess_bulk))
+
+
+
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=rhat)) +
+  ggtitle("Disitrbution of rhat values for the intercept\n of each player")
+
+
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=ess_bulk)) +
+  ggtitle("Disitrbution of ESS values for the intercept\n of each player")
+
+```
+
+
+From the output of the fit of the model we can see that around 25% of the transitions end up in a divergence. However we can see that no parameter has a extremely high rhat. The largest is bout 1.02 and most are below 1.01. 
+
+The bulk effective sample size seems pretty healthy as most of the values are over 400 with only a few between 250 and 400.
+
+
+
+
+```{r, echo=FALSE}
+pred_draws = fit_separate_rest_hours$draws(variables = "pts_pred", format="df")  %>% group_by(.chain) %>%
+  filter(.iteration > 980) %>% ungroup() %>% select(-c('.chain', '.iteration', '.draw'))
+
+sample_pred_draws = pred_draws # [500:550,]
+names(sample_pred_draws) = NULL
+```
+
+
+If we look at the posterior predictive check we can see it's not bad but not perfect. On the weak side we can see the posterior allows for negative values, including a draw as low as `r min(sample_pred_draws)` and one as high as  `r max(sample_pred_draws)`
+Then the mode is a bit shifted to the right in the posterior compared to the real data but not that bad.  
+The highest end of the distribution (not taking into account extreme draws) has a very decent fit.
+
+```{r, warning=FALSE, message=FALSE}
+
+ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws)) +
+  ggtitle("Posterior predictive check")
+
+```
+
+We calculate below the  leave one out expected log point wise predictive density  (elpd_loo) for this model. We will later compare it with the hierarchical model.
+
+```{r, echo=FALSE, warning=FALSE}
+fit_separate_rest_hours$loo()
+```
+
+##### TODO: Sensitivty
+
+
+
+## Hierarchical model
+
+
+```{r}
+# hierarchical_rest <- cmdstan_model(stan_file = "hierarchical_rest_hours.stan")
+# 
+# # Sampling from the model happens here:
+# fit_hierarchical_rest <- hierarchical_rest$sample(data = stan_data, refresh=0, parallel_chains  = 4,
+#                                       show_messages=FALSE)
+# 
+# fit_hierarchical_rest$save_object(file = "fit_hierarchical_rest.RDS")
+```
+```{r}
+fit_hierarchical_rest = readRDS("fit_hierarchical_rest.RDS")
+```
+
+
+
+From the output of the fit of the model we can see that around only 7% of the transitions end up in a divergence. However we can see that no parameter has a extremely high rhat. The largest is bout 1.02 and most are below 1.01. 
+
+The bulk effective sample size seems pretty healthy for the intercept of each player (values above 400 ) but we can see issues for the parameter for resting hours. Most of them have bulk ESS lower than 100.
+
+```{r, echo=FALSE, message=FALSE}
+convergence = fit_hierarchical_rest$summary(variables = c("mean_player", "beta_rest", "lp__"))
+
+
+
+convergence_int = convergence %>% filter(stringr::str_detect(variable, 'mean_player')) %>%
+  select(c(rhat, ess_bulk))
+
+
+
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=rhat)) +
+  ggtitle("Disitrbution of rhat values for the intercept\n of each player")
+
+
+ggplot(data=convergence_int) +
+  geom_histogram(aes(x=ess_bulk))  +
+  ggtitle("Disitrbution of ESS values for the intercept\n of each player")
+```
+
+
+```{r, echo=FALSE}
+
+head(fit_hierarchical_rest$summary(variables = c("mean_player", "sd_general", "beta_rest", "lp__")) %>% select(-mad)) %>% 
+  knitr::kable(
+    format = "latex",
+    align = "l",
+    booktabs = TRUE,
+    longtable = TRUE,
+    linesep = "",
+    ) %>%
+  kableExtra::kable_styling(
+      position = "left",
+      latex_options = c("striped", "repeat_header", "scale_down"),
+      stripe_color = "gray!15"
+    )
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+mcmc_hist(fit_hierarchical_rest$draws("mean_player[9]")) +
+  xlab(paste0("Intercept ",  new_player_id_df$lastName[9])) + 
+  ggtitle(paste0("Draws for the intercept of player ", new_player_id_df$lastName[9] ))
+
+```
+```{r, echo=FALSE, warning=FALSE}
+mcmc_hist(fit_hierarchical_rest$draws("mean_rookie")) +
+  ggtitle("Draws for an unseen player with 48 hours of\n
+                 rest (superpopulation)" )
+```
+We can see again the negative draws in here...
+
+```{r, echo=FALSE, warning=FALSE}
+pred_draws = fit_hierarchical_rest$draws(variables = "pts_pred", format="df") %>% select(-c('.chain', '.iteration', '.draw'))
+
+sample_pred_draws = pred_draws[3950:4000,]
+names(sample_pred_draws) = NULL
+
+```
+
+And if we look at the full posterior predictive distribution we can a see a similar shape as in the no pooled model, with still negative values but without extremes values. Now the lowest draw is  `r min(sample_pred_draws)` and the highest is  `r max(sample_pred_draws)`.  
+The mode is still a bit shifted overall we have a decent fit.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+ppc_dens_overlay(y = train$pts, yrep=as.matrix(sample_pred_draws)) %>%
+  ggtitle("Posterior predictive check")
+
+```
+
+ 
+By player we can see also a decent fit for a subset of players despite any difference in the number of  observations they might have.
+Dekker has only one observation so we don't a have a distribution to show.
+
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+
+
+ninth_player = dim(train %>% filter(new_player_id <= 9) )[1]
+
+ppc_dens_overlay_grouped(y = train$pts[1:ninth_player], yrep=as.matrix(sample_pred_draws)[,1:ninth_player], group=train$lastName[1:ninth_player]) +
+  ggtitle("Posterior predicitve check for a subsample\n of players")
+```
+
+```{r, echo=FALSE}
+fit_hierarchical_rest$loo()
+```
+
+
+
+#### Loo comparison
+
+The hierarchical model has the best predictive performance and the standard deviations
+of the differences are small compared to the actual difference so they don't influence
+the decision.
+
+```{r, warning=FALSE, echo=FALSE}
+loo_compare(fit_separate_rest_hours$loo(), fit_hierarchical_rest$loo())
+```
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+plot( fit_hierarchical_rest$loo(), label_points = TRUE)
+```
+The hierarchical model has around 1.5% observations with K statistic higher than 0.5 while 
+the pooled model had 1.7%. Looking at the chart these higher k statistic observations
+seem to be just a few distributed across the different players.  
+More specifically they appear when a player has a surprisingly high number of points in a game compared to their other matches. For example, the highest K value, observation 1472, corresponds to Paul Reed.  
+We can see in the histogram he scores usually 0 points and almost sure less than 10 points but one game he scored 25. That one is the observation with the highest K pareto value.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data= train %>% filter(playerId == 27884)) +
+  geom_histogram(aes(x=pts)) +
+  xlab("Points per game") + 
+  ggtitle("Histogram of points for Paul Reed")
+```
+
+
+
+## Next steps
+
+There are many things I want to do with the model and because of general lack of time and how inefficient I am with Stan and bayesian models yet I couldn't do or I decided to not dive more despite starting trying.  
+Among them:  
+
+* Try a negative binomial model to account for discrete positive values and being able to account for overdispersion.
+* Add more variables such as home court, amount of matches won so far in the season, age, etc and think properly about the priors.  
+* Evaluate the model not only at the player level but in the general purpose that is which team wins. This involves summing the players points per draw of each team and compare.  
+* Use the model to predict on unseen data.  
+* Run the model with all the data (all the players and all the dates) since I took a sample because some trials were taking too long or not even sampling.  
+* Maybe use brms to get full use of other functions to diagnose the model and more out of the box working things since it seems to me that using Stan requires more work apart from defining everything. I think I lost time on that.
+
+## Appendix
+
+##### No pooled
+
+
+```{r, eval=FALSE}
+data {
+  int<lower=0> N_observations;
+  int<lower=0> N_players;
+  array[N_observations] int player_idx; 
+  vector[N_observations] rest_hours;
+  vector[N_observations] pts;
+}
+
+parameters {
+  // Average points per game per player
+  vector[N_players] int_player;
+
+  // Standard deviation points per game per player
+  vector<lower=0>[N_players] sd_player;
+  
+  real<lower=0> beta_rest;
+  
+}
+
+transformed parameters {
+    // deterministic transformation of parameters and data
+    vector[N_observations] mu_player = int_player[player_idx] + beta_rest * rest_hours ;// linear model
+}
+
+
+
+
+model {
+  // Priors
+  for (player in 1:N_players) {
+    // Weakly informative. Vague. Based on assignment 7 logic.
+    int_player[player] ~ normal(10, 100);
+    // is this ok?
+    sd_player[player] ~ exponential(0.05);
+  }
+  
+  // Increase in points per hour rested. Is this ok?
+  beta_rest ~ exponential(0.05);
+  
+
+  // Likelihood
+  for (obs in 1:N_observations) {
+    pts[obs] ~ normal(mu_player[obs] , sd_player[player_idx[obs]]);
+  }
+
+
+  // Best practice would be to write the likelihood without the for loop as:
+  // weight ~ normal(mean_diet[diet_idx], sd_diet[diet_idx]);
+}
+
+generated quantities {
+  
+  // As I don't have covariates I can just simulate one time per player.
+  array[N_players] real pts_player = normal_rng(int_player, sd_player);
+
+  // vector[N_observations] mu_pred = mean_player[player_idx];
+  // vector[N_observations] mu_pred = mean_player[player_idx]  + beta_rest * rest_hours ;
+  vector[N_observations] sd_pred = sd_player[player_idx];
+  array[N_observations] real pts_pred = normal_rng(to_array_1d(mu_player) , to_array_1d(sd_pred));
+
+
+  // For LOO
+  vector[N_observations] log_lik;
+  for (n in 1:N_observations) {
+    log_lik[n] = normal_lpdf(pts[n] | mu_player[n]  , sd_pred[n]);
+    // log_lik[n] = normal_lpdf(pts[n] | mean_player[player_idx[n]] + beta_rest * rest_hours , sd_player[player_idx[n]]);
+  }
+}
+
+```
+
+##### Hierarchical
+
+```{r, eval=FALSE}
+data {
+  int<lower=0> N_observations;
+  int<lower=0> N_players;
+  array[N_observations] int player_idx; 
+  array[N_observations] real rest_hours;
+  vector[N_observations] pts;
+}
+
+parameters {
+  // Average points per game per player
+  vector<lower=0>[N_players] mean_player;
+
+  // Standard deviation points per game per player
+  vector<lower=0>[N_players] sd_player;
+  
+  vector<lower=0>[N_players] beta_rest;
+  
+  
+  real<lower=0> mean_general;
+  real<lower=0> sd_general;
+  real<lower=0> mean_rest;
+  real<lower=0> sd_rest;
+}
+
+
+
+transformed parameters {
+  
+    vector[N_observations] mu_player;
+    // deterministic transformation of parameters and data
+    for (obs in 1:N_observations) {
+      mu_player[obs] = mean_player[player_idx[obs]] + beta_rest[player_idx[obs]] * rest_hours[obs] ;// linear model
+    }
+}
+
+model {
+  
+    // Hierarchical
+    mean_general ~ normal(10,20);
+    sd_general ~ normal(0,30);
+    
+    mean_rest ~ normal(0,1);
+    sd_rest ~ normal(0,1);
+    
+  
+  // Priors
+  for (player in 1:N_players) {
+    // Weakly informative. Vague. Based on assignment 7 logic.
+    mean_player[player] ~ normal(mean_general, sd_general);
+    // is this ok?
+    sd_player[player] ~ exponential(0.3);
+    
+    beta_rest[player] ~ normal(mean_rest, sd_rest);
+  }
+  
+
+  // Likelihood
+  for (obs in 1:N_observations) {
+    // pts[obs] ~ normal(mean_player[player_idx[obs]] + beta_rest[player_idx[obs]] , sd_player[player_idx[obs]]) T[0,];
+    pts[obs] ~ normal(mu_player[obs] , sd_player[player_idx[obs]]) ;
+  }
+
+
+}
+
+generated quantities {
+  
+  vector[N_observations] mu_pred;
+  array[N_players] real pts_player = normal_rng(mean_player + beta_rest*48, sd_player);
+  
+  for (n in 1:N_observations) {
+    mu_pred[n] = mean_player[player_idx[n]] + beta_rest[player_idx[n]]*rest_hours[n];
+  }
+  vector[N_observations] sd_pred = sd_player[player_idx];
+  array[N_observations] real pts_pred = normal_rng(to_array_1d(mu_pred) , to_array_1d(sd_pred));
+  
+  
+  real mean_rookie;
+  mean_rookie = normal_rng(mean_general + mean_rest*48, sd_general);
+
+
+  // For LOO
+  vector[N_observations] log_lik;
+  for (n in 1:N_observations) {
+    log_lik[n] = normal_lpdf(pts[n] | mean_player[player_idx[n]] + beta_rest[player_idx[n]]*rest_hours[n]  , sd_player[player_idx[n]]);
+  }
+}
+```
+
+
+
+
+

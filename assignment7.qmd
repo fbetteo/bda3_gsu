@@ -1,0 +1,644 @@
+---
+title: "Assignment 7"
+subtitle: "Hierarchical model in Stan"
+author: anonymous # <-- hand in anonymously
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    standalone: true
+    self-contained: true
+    embed-resources: true
+    number-sections: true
+    mainfont: Georgia, serif
+    # linkcolor: "#212529"
+    fontsize: 1.2em
+    page-layout: article
+  pdf:
+    # documentclass: article
+    geometry:
+    - left=1cm,top=1cm,bottom=1cm,right=7cm
+    number-sections: true
+    code-annotations: none
+reference-location: margin
+citation-location: margin
+comments:
+  hypothesis: true
+editor: source
+---
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## Setup
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+The following loads several needed packages:
+
+```{r}
+#| label: imports
+
+library(aaltobda)
+library(bayesplot)
+library(cmdstanr)
+library(dplyr)
+library(ggplot2)
+library(ggdist) # for stat_dotsinterval
+library(posterior)
+if(!require(brms)){
+    install.packages("brms")
+    library(brms)
+}
+
+# Set more readable themes with bigger font for plotting packages.
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+
+# This registers CmdStan as the backend for compiling cmdstan-chunks.
+check_cmdstan_toolchain(fix = TRUE, quiet = TRUE)
+register_knitr_engine(override = FALSE)
+```
+
+:::
+::::
+
+
+# Hierarchical Model: Chicken Data with Stan (6p)
+
+
+## Choosing a weakly informative prior by intuition
+### (a)
+Based on the size of chickens and weights when buying groceries I would say a fully grown chicken ca be between 2000 and 10000 grams. Not sure really about the top boundary.  
+
+### (b)
+I don't know anything about chicken growth process but I would say it tend to increase more at the end, so I will adjust heavily my estimate to 500 grams to 3000 grams. I that case I would pick a $\mu$ of 1750 grams.
+
+### (c)
+Following my previous answer in b) I would say the boundaries could be 250 grams and 5000 grams. I'm extending the range to avoid being overconfident and I don't know the data so maybe there are chicken with unexpected values.
+### (d)
+If I think of a plausible effect of 200 grams of difference, then augmenting one order of magnitude would be 2000 grams giving a standard deviation of 2000gr,
+
+### (e)
+$\mu_0 \text{~} N(1750, 2000)$
+
+## Choosing a weakly informative prior using external references
+### (f)
+This [producer](https://www.agrifarming.in/poultry-feed-chart-and-weight-chart#broiler-poultry-feed-chart-and-weight-chart) claims it has organic farm chickens and for fully grown one it estimates a range of 3 to 7 pounds, that's 1360 grams to 3175.
+For twelve days we could say something like 340 grams 1000 grams. 
+The adjustment is roughly dividing by 4 and increasing a bit the upper limit to be less confident. We divide by 4 because I'm assuming some kind of exponential growth in the last days.  
+
+### (g)
+If the range provided and hence the adjusted ones are for all the chickens then the mean could be the middle value of the range, being 670 grams.  
+
+### (h)
+Using the proposed logic, we need to find the deviation that, using 670 as the mean will return that the cumulative probability up to the upper boundary 1000 is 99.7%
+
+```{r}
+pnorm(1000, 670, 120)
+```
+We end up with a standard deviation for the prior of 120.
+
+### (i)
+$\mu_0 \text{~} N(670, 120)$
+
+## Non-normal priors
+### (j)
+Normal priors can make no sense in the case of variables that are bounded (since Normal goes from -inf to inf). For example, the variance prior should probably not follow a normal distribution.
+Another example could be parameters that need to be from 0 to 1 for example.
+
+## Modeling diet effects on chicken weight
+::::{.callout-important collapse=true}
+# Data inside, don't peek before you have set your priors!
+:::{.callout-important collapse=true}
+# Have you set your priors?
+```{r}
+#| message: false
+data("ChickWeight")
+
+Chick12 <- ChickWeight %>% filter(Time == 12)
+
+head(Chick12)
+```
+:::
+::::
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+## Model fitting
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+
+To run Stan for that model, simply use:
+
+```{r}
+#| label: format data for Stan
+stan_data <- list(
+  N_observations = nrow(Chick12),
+  N_diets = length(unique(Chick12$Diet)),
+  diet_idx = Chick12$Diet,
+  weight = Chick12$weight
+)
+
+model_separate <- cmdstan_model(stan_file = "additional_files/assignment7/chickens_separate.stan")
+
+# Sampling from the model happens here:
+fit_separate <- model_separate$sample(data = stan_data, refresh=0,
+                                      show_messages=FALSE)
+```
+Fit objects by default print a summary of the draws obtained.
+These are **NOT** the results you would expect to turn in your report. You will need to change the priors in the code for the separate model.
+```{r}
+fit_separate
+```
+Quick model convergence check (as in assignment 6):
+```{r}
+fit_separate$cmdstan_diagnose()
+```
+
+:::
+::::
+
+
+### (k)
+
+**Pooled model:**
+$$w_{ij} \text{~} N(\mu, \sigma)$$
+$$ \mu \text{~} N(670,120)$$
+$$ \sigma \text{~} Uniform(0,100)$$
+
+**Hierarchical Model:**
+$$w_{ij} \text{~} N(\mu_j, \sigma_j)$$
+$$ \mu_j \text{~} N(\mu_0, sigma_0)$$
+$$ \log(\sigma) \text{~} Uniform(0,100)$$
+
+$$ \mu_0 \text{~} N(\mu, \tau)$$
+$$ \mu  \text{~} Uniform(0,800)$$
+$$ \tau \text{~} Uniform(0,100)$$
+
+  
+The pooled model states that each chicken weight comes from a common normal distribution for all of them, no matter the diet. That Normal distribution has priors for mu and sigma. 
+
+The hierarchical models instead states that each chicken weight comes from a normal distribution that has a different mean per diet. All diets share a common variance.
+And then we state that each of those group diet means is not estimated independently from the others but we assume that each diet mean comes from a "super population" of means, that is itself also a Normal. So, each diet mean is a sample from this Normal distribution and not completely independent from the others as in the no pooled model.
+This super population normal has uniform priors for both the mean and the variance.  
+
+### (l)
+
+I had to play a bit with priors to make it work, specially to have logical results for the pooled and hierarchical model.My priors based on data were really off.  
+Also, the separate model has been kept with the bad priors.  
+I tried modifying priors for the separate model and I got convincing results -> mean for diet 4 in the hierarchical model being something in between the mean for the pooled model and the separate one.  
+With the current bad priors that doesn't happen because the separate model is really shrunk towards the prior.
+
+**Pooled Model**:
+```
+data {
+  int<lower=0> N_observations;
+  int<lower=0> N_diets;
+  array[N_observations] int diet_idx; // Pair observations to their diets.
+  vector[N_observations] weight;
+}
+
+parameters {
+  // Average weight of chicks no matter the diet
+  real mean_diet;
+
+  // Standard deviation of weights observed among chicks no matter the diet.
+  real<lower=0> sd_diet;
+}
+
+model {
+  // Priors
+  // These look bad. I need to think about these again.
+
+    mean_diet ~ normal(670, 120);
+    sd_diet ~ uniform(0,100);
+
+  // Likelihood
+    weight ~ normal(mean_diet, sd_diet);
+  // Best practice would be to write the likelihood without the for loop as:
+  // weight ~ normal(mean_diet[diet_idx], sd_diet[diet_idx]);
+}
+
+generated quantities {
+  real weight_pred;
+  real mean_five;
+
+  // Sample from the (posterior) predictive distribution
+  weight_pred = normal_rng(mean_diet, sd_diet);
+}
+
+```
+
+
+**Hierarchical Model**:
+```
+data {
+  int<lower=0> N_observations;
+  int<lower=0> N_diets;
+  array[N_observations] int diet_idx; // Pair observations to their diets.
+  vector[N_observations] weight;
+}
+
+parameters {
+  // Average weight of chicks with a given diet.
+  vector[N_diets] mean_diet;
+
+  // Standard deviation of weights observed among chicks sharing a diet. Shared deviation for all diets.
+  real<lower=0> sd_diet;
+  
+  real<lower=0> mean_general;
+  real<lower=0> sd_general;
+  
+}
+
+model {
+  // Priors
+  // These look bad. I need to think about these again.
+
+    mean_general ~ uniform(0,800);
+    sd_general ~ uniform(0,100);
+    sd_diet ~ uniform(0,100);
+    
+  for (diet in 1:N_diets) {
+    mean_diet[diet] ~ normal(mean_general, sd_general);
+  }
+
+  // Likelihood
+  for (obs in 1:N_observations) {
+    weight[obs] ~ normal(mean_diet[diet_idx[obs]], sd_diet);
+  }
+
+  // Best practice would be to write the likelihood without the for loop as:
+  // weight ~ normal(mean_diet[diet_idx], sd_diet[diet_idx]);
+}
+
+generated quantities {
+  real weight_pred;
+  real mean_five;
+
+  // Sample from the (posterior) predictive distribution of the fourth diet.
+  weight_pred = normal_rng(mean_diet[4], sd_diet);
+
+  // Construct samples of the mean of the fifth diet.
+  // We only have the prior...
+  mean_five = normal_rng(0, 10);
+}
+
+
+```
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+### Model fitting and data preparation
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+
+```{r}
+#| label: samples for pooled and hierarchical
+#| code-summary: Sampling the pooled & hierarhical models
+model_pooled <- cmdstan_model(stan_file = "additional_files/assignment7/chickens_pooled.stan")
+
+# Sampling from the model happens here:
+fit_pooled <- model_pooled$sample(data = stan_data, refresh=0,
+                                      show_messages=FALSE)
+
+
+```
+```{r}
+
+model_hierarchical <- cmdstan_model(stan_file = "additional_files/assignment7/chickens_hierarchical.stan")
+
+# Sampling from the model happens here:
+fit_hierarchical <- model_hierarchical$sample(data = stan_data, refresh=0,
+                                      show_messages=FALSE)
+```
+
+Below, we collect the corresponding samples from the three models into a shared
+data frame using the `extract_variable` function. This makes plotting the samples
+in a single plot easier.
+```{r}
+#| label: prepare data for plots
+#| code-summary: Prepare data for plots
+
+# Expect the same number of samples from each model.
+n_samples <- nrow(fit_hierarchical$sampler_diagnostics(format = "matrix"))
+
+# Collect samples and the model used to a data frame.
+posterior_mean_diet_4 <- data.frame(
+  model_name = rep(c("Separate", "Pooled", "Hierarchical"),
+              each = n_samples),
+  mean_diet_4 = c(
+   extract_variable(fit_separate, "mean_diet[4]"),
+   extract_variable(fit_pooled, "mean_diet"),
+   extract_variable(fit_hierarchical, "mean_diet[4]")
+  ))
+
+predicted_weight_diet_4 <- data.frame(
+  model_name = rep(c("Separate", "Pooled", "Hierarchical"),
+              each = n_samples),
+  predicted_weight = c(
+   extract_variable(fit_separate, "weight_pred"),
+   extract_variable(fit_pooled, "weight_pred"),
+   extract_variable(fit_hierarchical, "weight_pred")
+  ))
+
+# Collect samples and the model used to a long data frame.
+posterior_mean_diet_5 <- data.frame(
+  model_name = rep(c("Separate", "Pooled", "Hierarchical"),
+    each = n_samples
+  ),
+  mean_diet_5 = c(
+    extract_variable(fit_separate, "mean_five"),
+    extract_variable(fit_pooled, "mean_diet"),
+    extract_variable(fit_hierarchical, "mean_five")
+  )
+)
+
+# Mean observed weight per diet, these help to compare the posteriors to data.
+diet_means <- sapply(
+  1:4, function(diet) mean(Chick12[Chick12$Diet == diet, "weight"])
+)
+```
+
+:::
+::::
+
+
+### (m)
+
+Ideally the hierarchical model should be somewhere in between the separate and
+pooled model but it's not the case because of the bad priors on the separate
+model.  
+Apart from that we can see greater dispersion in the posterior for the separate
+model, a bit less in the hierarchical one and much less in the pooled one.  
+The pooled model is not as close as the hierarchical one to the actual mean diet,
+which makes sense based on the pooling (other diets play a larger role).  
+The separate model is clearly wrong as it should be centered close to the actual 
+mean but again, the priors are too strong for the data avaialable.
+
+```{r}
+#| label: figure - posterior of mean 4
+#| fig-cap: Posterior distribution of the mean weight of chicks consuming diet 4.
+ggplot(posterior_mean_diet_4, aes(x = mean_diet_4, y = model_name)) +
+  stat_dotsinterval(quantiles = 100, scale = .9) +
+  vline_at(diet_means[4], size = 1, linetype = "dashed") +
+  # Annotate the vline from above.
+  annotate("text", label = "Observation mean", x = diet_means[4] - 5, y = .7,
+           hjust = "right", size = 6) +
+  # Add title and axis labels. One line to make everything so much more clear!
+  labs(
+    title = "Mean of diet 4",
+    x = "Weight (g)",
+    y = "Model"
+  )
+```
+
+
+### (n)
+
+The predictive distribution for the diet 4 overlaps much more the different
+posteriors. The mean is the same as in the previous plot but we can see much 
+larger dispersion on the possible values. Even the separate model has some draws
+close to the actual mean, but also some negative draws...  
+The distributions have larger tails admitting some "far" away draws but most of
+the mass for both the pooled and hierarchical model are in a decent range between
+~100 and 200 grams and no negative values.
+
+```{r}
+#| label: figure - predicted weight of for diet 4
+#| fig-cap: The (posterior) predictive distribution of the weigth of a chick consuming diet 4.
+ggplot(predicted_weight_diet_4, aes(x = predicted_weight, y = model_name)) +
+  stat_dotsinterval(quantiles = 100, scale = .9) +
+  vline_at(diet_means[4], size = 1, linetype = "dashed") +
+  # Annotate the vline from above.
+  annotate("text", label = "Observation mean", x = diet_means[4] - 5, y = .7,
+           hjust = "right", size = 6) +
+  # Add title and axis labels. One line to make everything so much more clear!
+  labs(
+    title = "Weigth of a chick with diet 4",
+    x = "Weight (g)",
+    y = "Model"
+  )
+```
+
+
+### (o)
+The separate model has no data to estimate a new fifth diet and so we only can 
+sample from the prior. In this case, the bad prior, a Normal(0,10) as it is shown
+in the plot.  
+For the pooled model we sample from the pooled distribution of means, the same 
+we did for diet 4. All diets share a distribution.  
+For the hierarchical model we can sample a new diet mean from the super population.  
+It's a pretty wide distribution. The mode and most part of the mass is above 100
+grams which is fine but the tails are heavy and there are extreme value, including
+a few negative draws.
+
+```{r}
+#| label: figure - posterior of mean 5
+#| fig-cap: Posterior distribution of the mean weight of chicks consuming the new diet 5 not seen before.
+
+ggplot(posterior_mean_diet_5, aes(x = mean_diet_5, y = model_name)) +
+  # Draw the mean of each diet from the data as a dashed vertical line.
+  vline_at(diet_means, size = .5, linetype = "dashed") +
+  # dotsinterval gives mean, 50%, and 90% intervals + dotsplot with each dot
+  # representing 1% of data (quantiles = 100).
+  stat_dotsinterval(quantiles = 100, scale = .9) +
+  # Annotate the vline from above.
+  annotate(geom = "text", label = "Means of observed diets", y = .7, x = 100,
+           hjust = "right", size = 5, family = "sans") +
+  # Add title and axis labels. One line to make everything so much more clear!
+  labs(title = "Mean of a new diet",
+       x = "Weight (g)",
+       y = "Model")
+```
+
+
+### (p)
+
+**Separate model**
+For the separate model, the 90% credible interval of the mean of the diet 4
+is the following:
+
+```{r}
+model  = posterior_mean_diet_4 %>% filter(model_name == "Separate" )
+
+quantile(model$mean_diet_4,probs=c(0.05, 0.95))
+```
+**Pooled model**
+For the pooled model, the 90% credible interval of the mean of the diet 4
+is the following:
+
+```{r}
+model  = posterior_mean_diet_4 %>% filter(model_name == "Pooled" )
+
+quantile(model$mean_diet_4,probs=c(0.05, 0.95))
+```
+
+
+**Hierarchical model**
+For the Hierarchical model, the 90% credible interval of the mean of the diet 4
+is the following:
+
+```{r}
+model  = posterior_mean_diet_4 %>% filter(model_name == "Hierarchical" )
+
+quantile(model$mean_diet_4,probs=c(0.05, 0.95))
+```
+
+# Hierarchical model with BRMS (3p)
+### (a)
+
+
+```{r}
+#| label: plot scatter centered parameterization
+
+bayesplot::mcmc_scatter(x = fit_hierarchical$draws(variables = c("mean_diet[4]", "sd_general")),
+                        np = nuts_params(fit_hierarchical)) +
+  scale_y_log10() +
+  labs(x = expression(mean_diet[4]), y = expression(sd_diets)) +
+  ylim(c(0,NA))
+```
+There is plenty of possible divergent transitions, all over the scatterplot and
+not in a particular region.
+
+### (b)
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+
+### Fit brms model
+
+
+*This block will only be visible in your HTML output, but will be hidden when rendering to PDF with quarto for the submission.*
+**Make sure that this does not get displayed in the PDF!**
+    
+
+
+
+```{r}
+#| label: fit brms model
+brms_fit = brm(
+  weight ~ 1 + (1 | Diet),
+  data=Chick12,
+  prior=c(
+    # REPLACE WITH YOUR PRIOR FOR THE INTERCEPT
+    prior(uniform(0,800), class="Intercept"), # prior for mu_0
+    # REPLACE WITH YOUR PRIOR FOR SIGMA
+    prior(uniform(0,100), class="sigma"),     # prior for sigma
+    # REPLACE WITH YOUR PRIOR FOR SD
+    prior(uniform(0,100), class="sd")         # prior for tau
+  ),
+  backend = "cmdstanr",
+  save_pars = save_pars(manual = c("z_1[1,4]"))
+)
+```
+
+:::
+::::
+
+
+
+Because `brms` is a bit chatty, suppress it's output in the PDF using the block above, but copy the code you executed into the code block below, which doesn't execute:
+```{r, eval=FALSE}
+brms_fit = brm(
+  weight ~ 1 + (1 | Diet),
+  data=Chick12,
+  prior=c(
+    # REPLACE WITH YOUR PRIOR FOR THE INTERCEPT
+    prior(uniform(0,800), class="Intercept"), # prior for mu_0
+    # REPLACE WITH YOUR PRIOR FOR SIGMA
+    prior(uniform(0,100), class="sigma"),     # prior for sigma
+    # REPLACE WITH YOUR PRIOR FOR SD
+    prior(uniform(0,100), class="sd")         # prior for tau
+  ),
+  backend = "cmdstanr",
+  save_pars = save_pars(manual = c("z_1[1,4]"))
+)
+```
+
+
+### (c)
+
+
+```{r}
+#| label: transformed posterior samples from brms
+# Draws for mu_4
+mu_4 = posterior_epred(brms_fit, newdata = data.frame(Diet=4))
+
+# To display accurate digits
+# MCSE for the mean
+print(posterior::mcse_mean(mu_4))
+# To display accurate digits
+# MCSE for the quantiles
+print(posterior::mcse_quantile(mu_4,probs=c(0.05, 0.95)))
+
+# Compute the mean, and quantiles. Remember to round your answers accordingly.
+# ...
+print(paste0("mean: ", round(mean(mu_4),0)))
+
+print("90% credible interval:")
+print(round(quantile(mu_4,probs=c(0.05, 0.95),0)))
+
+```
+The results are virtually the same. I got divergent chains even with brms. Maybe
+it's a problem with the priors used? Not sure really.
+
+### (d)
+
+
+### Scatterplot for non-centered parametrization
+
+Due the non-centered parametrization, we need to transform compute the $\mu_d$ term as the sum of the population intercept and the group specific deviation from the intercept. You can choose which diet to plot by modifying the `d` integer in `r_Diet[d,Intercept]`.
+```{r}
+#| label: plot scatter non-centered parameterization
+
+draws = as_draws_df(brms_fit) %>%
+  posterior::mutate_variables(mean_diet_4 = `r_Diet[4,Intercept]` + b_Intercept)
+
+bayesplot::mcmc_scatter(draws,
+                        pars = c("mean_diet_4", "sd_Diet__Intercept"),
+                        np = nuts_params(brms_fit)) +
+  scale_y_log10() +
+  xlab(expression(mean_diet[4])) +
+  ylab(expression(sd_diets))
+
+```
+Still a lot of divergences although they seem more localized in the upper bound
+of the standard deviations. Still across all the values of the mean diet.
+
+### (e)
+In the current run ,  plain Stan has fewer divergent transitions but I think 
+that's
+pretty variable. I saw different values quite different, from 16% to 40%.
+
+In brms the divergent transitions occur much more in the higher values of Tau 
+while
+in Stan they occurred more spread but with highest chance in the lower values of 
+Tau.  
+
+The centered parametrization had problems sampling all over the parameter space
+although specially in the lower values of Tau.  
+The non-centered parametrization has issues in the highest values of Tau but in
+the rest it seems to be more stable.
